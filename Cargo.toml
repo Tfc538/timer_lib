@@ -10,7 +10,7 @@ homepage = "https://github.com/Tfc538/timer_lib"
 documentation = "https://docs.rs/timer_lib"
 readme = "README.md"
 keywords = ["timer", "async", "recurring", "scheduler", "timeout"]
-categories = ["asynchronous", "utilities"]
+categories = ["asynchronous"]
 
 [dependencies]
 async-trait = "0.1.83"
