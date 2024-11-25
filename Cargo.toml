@@ -1,0 +1,9 @@
+[package]
+name = "timer-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.83"
+log = "0.4.22"
+tokio = "1.41.1"
