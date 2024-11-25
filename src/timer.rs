@@ -1,9 +1,12 @@
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use async_trait::async_trait;
+use futures;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tokio::time::{self, MissedTickBehavior};
+use tokio::time;
+
 #[cfg(feature = "logging")]
 use log::{debug, error};
 
@@ -33,10 +36,11 @@ pub trait TimerCallback: Send + Sync {
     async fn execute(&self) -> Result<(), TimerError>;
 }
 
+#[derive(Clone)]
 /// Timer struct for managing one-time and recurring tasks.
 pub struct Timer {
     state: Arc<Mutex<TimerState>>,
-    handle: Option<JoinHandle<()>>,
+    handle: Option<Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>>,
     interval: Duration,
     expiration_count: Option<usize>,
     statistics: Arc<Mutex<TimerStatistics>>,
@@ -78,9 +82,9 @@ impl Timer {
             .await
     }
 
-    /// Pauses the timer.
-    pub fn pause(&self) -> Result<(), TimerError> {
-        let mut state = self.state.lock().unwrap();
+    /// Pauses a running timer.
+    pub async fn pause(&self) -> Result<(), TimerError> {
+        let mut state = self.state.lock().await;
         if *state == TimerState::Running {
             *state = TimerState::Paused;
             #[cfg(feature = "logging")]
@@ -92,8 +96,8 @@ impl Timer {
     }
 
     /// Resumes a paused timer.
-    pub fn resume(&self) -> Result<(), TimerError> {
-        let mut state = self.state.lock().unwrap();
+    pub async fn resume(&self) -> Result<(), TimerError> {
+        let mut state = self.state.lock().await;
         if *state == TimerState::Paused {
             *state = TimerState::Running;
             self.pause_notify.notify_one();
@@ -106,15 +110,17 @@ impl Timer {
     }
 
     /// Stops the timer.
-    pub fn stop(&mut self) -> Result<(), TimerError> {
-        let mut state = self.state.lock().unwrap();
+    pub async fn stop(&mut self) -> Result<(), TimerError> {
+        let mut state = self.state.lock().await;
         if *state != TimerState::Stopped {
             *state = TimerState::Stopped;
             if let Some(handle) = self.handle.take() {
                 drop(state); // Release the lock before awaiting
                 #[cfg(feature = "logging")]
                 debug!("Stopping timer.");
-                let _ = futures::executor::block_on(handle);
+                if let Some(handle) = handle.lock().await.take() {
+                    handle.abort();
+                }
             }
             Ok(())
         } else {
@@ -136,15 +142,16 @@ impl Timer {
     }
 
     /// Gets the timer's statistics.
-    pub fn get_statistics(&self) -> TimerStatistics {
-        self.statistics.lock().unwrap().clone()
+    pub async fn get_statistics(&self) -> TimerStatistics {
+        self.statistics.lock().await.clone()
     }
 
     /// Gets the current state of the timer.
-    pub fn get_state(&self) -> TimerState {
-        *self.state.lock().unwrap()
+    pub async fn get_state(&self) -> TimerState {
+        *self.state.lock().await
     }
 
+    /// Internal method to start a timer.
     /// Internal method to start a timer.
     async fn start_internal<F>(
         &mut self,
@@ -162,49 +169,64 @@ impl Timer {
             ));
         }
 
-        self.stop().ok(); // Stop any existing timer
+        if let Err(e) = self.stop().await {
+            #[cfg(feature = "logging")]
+            error!("Failed to stop existing timer: {}", e);
+        }
 
-        *self.state.lock().unwrap() = TimerState::Running;
-        self.interval = interval;
-        self.expiration_count = expiration_count;
+        // Set the timer state to Running
+        {
+            let mut state_lock = self.state.lock().await;
+            *state_lock = TimerState::Running;
+        }
 
+        // Clone variables for the async move closure
         let state = Arc::clone(&self.state);
         let statistics = Arc::clone(&self.statistics);
         let pause_notify = Arc::clone(&self.pause_notify);
+        let interval = interval;
+        let expiration_count = expiration_count;
+        let callback = Arc::new(callback); // Wrap the callback in Arc
 
         #[cfg(feature = "logging")]
         debug!("Starting timer.");
 
-        self.handle = Some(tokio::spawn(async move {
+        self.handle = Some(Arc::new(Mutex::new(Some(tokio::spawn(async move {
             let mut tick_count = 0;
             let start_time = Instant::now();
 
             loop {
-                {
-                    let state_lock = state.lock().unwrap();
-                    if *state_lock == TimerState::Stopped {
-                        #[cfg(feature = "logging")]
-                        debug!("Timer stopped.");
-                        break;
-                    } else if *state_lock == TimerState::Paused {
-                        pause_notify.notified().await;
-                        continue;
-                    }
+                // Check the timer state
+                let current_state = {
+                    let state_lock = state.lock().await;
+                    *state_lock
+                };
+
+                if current_state == TimerState::Stopped {
+                    break;
+                } else if current_state == TimerState::Paused {
+                    pause_notify.notified().await;
+                    continue;
                 }
 
+                // Wait for the interval
                 time::sleep(interval).await;
 
-                let result = callback.execute().await;
-                if let Err(e) = result {
+                // Execute the callback
+                if let Err(e) = callback.execute().await {
                     #[cfg(feature = "logging")]
                     error!("Callback execution error: {}", e);
                 }
 
-                let mut stats = statistics.lock().unwrap();
-                stats.execution_count += 1;
-                stats.elapsed_time = start_time.elapsed();
+                // Update statistics
+                {
+                    let mut stats = statistics.lock().await;
+                    stats.execution_count += 1;
+                    stats.elapsed_time = start_time.elapsed();
+                }
                 tick_count += 1;
 
+                // Check expiration count
                 if let Some(max_ticks) = expiration_count {
                     if tick_count >= max_ticks {
                         #[cfg(feature = "logging")]
@@ -218,8 +240,9 @@ impl Timer {
                 }
             }
 
-            *state.lock().unwrap() = TimerState::Stopped;
-        }));
+            #[cfg(feature = "logging")]
+            debug!("Timer stopped.");
+        })))));
 
         Ok(())
     }

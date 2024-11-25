@@ -8,7 +8,7 @@ Thank you for your interest in contributing to **TimerLib**! We welcome contribu
 
 ### Reporting Issues
 If you find a bug or have a feature request:
-1. Check the [existing issues](https://github.com/Tfc538/timer_lib/issues) to avoid duplicates.
+1. Check the [existing issues](https://github.com/Tfc538/timer-lib/issues) to avoid duplicates.
 2. Create a new issue with a clear title and description.
 3. Provide as much detail as possible, including code snippets or error logs if applicable.
 
@@ -19,8 +19,8 @@ If you find a bug or have a feature request:
    - Fork the TimerLib repository to your GitHub account.
 2. **Clone the Repository**:
    ```bash
-   git clone https://github.com/Tfc538/timer_lib.git
-   cd timer_lib
+   git clone https://github.com/Tfc538/timer-lib.git
+   cd timer-lib
    ```
 3. **Create a Feature Branch**:
    ```bash

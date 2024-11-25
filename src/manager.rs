@@ -32,8 +32,8 @@ impl TimerManager {
 
     /// Stops all timers.
     pub fn stop_all(&self) {
-        let timers = self.timers.lock().unwrap();
-        for timer in timers.values() {
+        let mut timers = self.timers.lock().unwrap();
+        for timer in timers.values_mut() {
             let _ = timer.stop();
         }
     }
@@ -45,7 +45,7 @@ impl TimerManager {
             .unwrap()
             .iter()
             .filter_map(|(id, timer)| {
-                if timer.get_state() != crate::timer::TimerState::Stopped {
+                if futures::executor::block_on(timer.get_state()) != crate::timer::TimerState::Stopped {
                     Some(*id)
                 } else {
                     None
@@ -55,8 +55,8 @@ impl TimerManager {
     }
 
     /// Retrieves a timer by ID.
-    pub fn get_timer(&self, id: u64) -> Option<Timer> {
-        self.timers.lock().unwrap().get(&id).cloned()
+    pub fn get_timer(&self, id: u64) -> Option<Arc<Mutex<Timer>>> {
+        self.timers.lock().unwrap().get(&id).cloned().map(|timer| Arc::new(Mutex::new(timer)))
     }
 }
 

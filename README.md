@@ -47,7 +47,7 @@ timer-lib = "1.0.0"
 Here’s a quick example of using **TimerLib** to schedule a one-time task:
 
 ```rust
-use timer_lib::{Timer, TimerCallback};
+use timer-lib::{Timer, TimerCallback};
 use async_trait::async_trait;
 
 struct MyCallback;
@@ -68,7 +68,7 @@ async fn main() {
 
 ### For recurring timers:
 ```rust
-use timer_lib::{Timer, TimerCallback};
+use timer-lib::{Timer, TimerCallback};
 use async_trait::async_trait;
 
 struct RecurringCallback;
@@ -90,13 +90,13 @@ async fn main() {
 }
 ```
 
-For more examples, check the [documentation](https://docs.rs/timer_lib).
+For more examples, check the [documentation](https://docs.rs/timer-lib).
 
 ---
 
 ## Documentation
 
-Detailed documentation is available on [docs.rs](https://docs.rs/timer_lib).
+Detailed documentation is available on [docs.rs](https://docs.rs/timer-lib).
 
 ---
 

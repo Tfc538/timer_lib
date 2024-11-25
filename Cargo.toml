@@ -1,9 +1,23 @@
 [package]
 name = "timer-lib"
 version = "0.1.0"
+authors = ["Tim Gatzke <post@tim-gatzke.de>"]
 edition = "2021"
+description = "A feature-rich Rust library for creating and managing timers."
+license = "MIT"
+repository = "https://github.com/Tfc538/timer_lib"
+homepage = "https://github.com/Tfc538/timer_lib"
+documentation = "https://docs.rs/timer_lib"
+readme = "README.md"
+keywords = ["timer", "async", "recurring", "scheduler", "timeout"]
+categories = ["asynchronous", "utilities"]
 
 [dependencies]
 async-trait = "0.1.83"
-log = "0.4.22"
-tokio = "1.41.1"
+futures = "0.3.31"
+log = { version = "0.4", optional = true }
+thiserror = "2.0.3"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+logging = ["log"]
