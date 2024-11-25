@@ -2,12 +2,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::timer::Timer;
-use crate::TimerError;
 
 /// A manager for controlling multiple timers.
 pub struct TimerManager {
     timers: Arc<Mutex<HashMap<u64, Timer>>>,
     next_id: Arc<Mutex<u64>>,
+}
+
+impl Default for TimerManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TimerManager {

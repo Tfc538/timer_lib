@@ -1,10 +1,8 @@
 use async_trait::async_trait;
-use futures;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 use tokio::time;
 
 #[cfg(feature = "logging")]
@@ -151,6 +149,11 @@ impl Timer {
         *self.state.lock().await
     }
 
+    // Gets expiration count
+    pub fn get_expiration_count(&self) -> Option<usize> {
+        self.expiration_count
+    }
+
     /// Internal method to start a timer.
     /// Internal method to start a timer.
     async fn start_internal<F>(
@@ -169,7 +172,7 @@ impl Timer {
             ));
         }
 
-        if let Err(e) = self.stop().await {
+        if let Err(_e) = self.stop().await {
             #[cfg(feature = "logging")]
             error!("Failed to stop existing timer: {}", e);
         }
@@ -213,7 +216,7 @@ impl Timer {
                 time::sleep(interval).await;
 
                 // Execute the callback
-                if let Err(e) = callback.execute().await {
+                if let Err(_e) = callback.execute().await {
                     #[cfg(feature = "logging")]
                     error!("Callback execution error: {}", e);
                 }

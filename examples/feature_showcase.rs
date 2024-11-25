@@ -1,6 +1,6 @@
-use timer_lib::{Timer, TimerCallback, TimerManager};
 use async_trait::async_trait;
 use std::time::Duration;
+use timer_lib::{Timer, TimerCallback, TimerManager};
 use tokio::time::sleep;
 
 struct OneTimeCallback;
@@ -26,7 +26,9 @@ impl TimerCallback for RecurringCallback {
 #[async_trait]
 impl TimerCallback for ErrorCallback {
     async fn execute(&self) -> Result<(), timer_lib::TimerError> {
-        Err(timer_lib::TimerError::CallbackError("Simulated error!".into()))
+        Err(timer_lib::TimerError::CallbackError(
+            "Simulated error!".into(),
+        ))
     }
 }
 
@@ -53,13 +55,19 @@ async fn main() {
     // 3. Pause and Resume
     sleep(Duration::from_secs(6)).await;
     println!("Pausing recurring timer...");
-    if let Some(timer) = manager.get_timer(recurring_timer_id).and_then(|t| t.lock().ok().map(|t| t.clone())) {
+    if let Some(timer) = manager
+        .get_timer(recurring_timer_id)
+        .and_then(|t| t.lock().ok().map(|t| t.clone()))
+    {
         timer.pause().await.unwrap();
     }
 
     sleep(Duration::from_secs(3)).await; // Wait while paused
     println!("Resuming recurring timer...");
-    if let Some(timer) = manager.get_timer(recurring_timer_id).and_then(|t| t.lock().ok().map(|t| t.clone())) {
+    if let Some(timer) = manager
+        .get_timer(recurring_timer_id)
+        .and_then(|t| t.lock().ok().map(|t| t.clone()))
+    {
         timer.resume().await.unwrap();
     }
 
