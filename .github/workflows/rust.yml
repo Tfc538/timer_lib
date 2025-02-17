@@ -5,13 +5,13 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:  # Allows manual triggering
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
@@ -20,3 +20,22 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+
+  create-release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'  # Only runs if manually triggered
+    steps:
+    - uses: actions/checkout@v4
+    - name: Get latest commit hash
+      id: get_commit
+      run: echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.0.${{ env.COMMIT_HASH }}  # Versioning based on commit hash
+        name: Release v1.0.${{ env.COMMIT_HASH }}
+        body: "Automated release from commit ${{ env.COMMIT_HASH }}"
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
