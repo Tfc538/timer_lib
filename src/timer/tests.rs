@@ -199,6 +199,42 @@ async fn builder_starts_recurring_timers_with_less_boilerplate() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn recurring_timers_can_delay_the_first_tick() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let timer = Timer::new();
+
+    timer
+        .start_recurring_with_delay(
+            Duration::from_secs(5),
+            Some(Duration::from_secs(2)),
+            CountingCallback {
+                executions: Arc::clone(&executions),
+                fail: false,
+            },
+            Some(2),
+        )
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    advance(Duration::from_secs(4)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn completion_subscription_is_lossless() {
     let timer = Timer::new();
     let mut completion = timer.completion();
@@ -262,6 +298,37 @@ async fn paused_builder_start_waits_for_resume() {
     advance(Duration::from_secs(1)).await;
     settle().await;
 
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn builder_initial_delay_controls_the_first_recurring_tick() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let timer = Timer::recurring(Duration::from_secs(3))
+        .initial_delay(Duration::from_secs(1))
+        .expiration_count(2)
+        .start(CountingCallback {
+            executions: Arc::clone(&executions),
+            fail: false,
+        })
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
     assert_eq!(
         timer.join().await.unwrap().reason,
         TimerFinishReason::Completed

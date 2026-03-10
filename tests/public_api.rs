@@ -82,6 +82,27 @@ async fn builder_api_is_simple_to_use() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn recurring_initial_delay_is_available_from_the_public_api() {
+    let timer = Timer::recurring(Duration::from_secs(5))
+        .initial_delay(Duration::from_secs(2))
+        .expiration_count(1)
+        .start(|| async { Ok(()) })
+        .await
+        .unwrap();
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(timer.get_statistics().await.execution_count, 0);
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn completion_api_is_simple_to_consume() {
     let timer = Timer::new();
     let mut completion = timer.completion();

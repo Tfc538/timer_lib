@@ -232,7 +232,10 @@ pub(super) struct TimerInner {
 #[derive(Debug, Clone, Copy)]
 enum TimerKind {
     Once(Duration),
-    Recurring(Duration),
+    Recurring {
+        interval: Duration,
+        initial_delay: Option<Duration>,
+    },
 }
 
 /// Builds and starts a timer with less boilerplate.
@@ -318,7 +321,7 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        self.start_internal(delay, callback, false, None, false)
+        self.start_internal(delay, None, callback, false, None, false)
             .await
     }
 
@@ -345,7 +348,7 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        self.start_internal(interval, callback, true, expiration_count, false)
+        self.start_recurring_with_delay(interval, None, callback, expiration_count)
             .await
     }
 
@@ -362,6 +365,28 @@ impl Timer {
     {
         self.start_recurring(interval, callback, expiration_count)
             .await
+    }
+
+    /// Starts a recurring timer with an optional initial delay.
+    pub async fn start_recurring_with_delay<F>(
+        &self,
+        interval: Duration,
+        initial_delay: Option<Duration>,
+        callback: F,
+        expiration_count: Option<usize>,
+    ) -> Result<u64, TimerError>
+    where
+        F: TimerCallback + 'static,
+    {
+        self.start_internal(
+            interval,
+            initial_delay,
+            callback,
+            true,
+            expiration_count,
+            false,
+        )
+        .await
     }
 
     /// Pauses a running timer.
@@ -560,6 +585,7 @@ impl Timer {
     async fn start_internal<F>(
         &self,
         interval: Duration,
+        initial_delay: Option<Duration>,
         callback: F,
         recurring: bool,
         expiration_count: Option<usize>,
@@ -577,6 +603,12 @@ impl Timer {
         if recurring && matches!(expiration_count, Some(0)) {
             return Err(TimerError::invalid_parameter(
                 "Expiration count must be greater than zero.",
+            ));
+        }
+
+        if initial_delay.is_some_and(|delay| delay.is_zero()) {
+            return Err(TimerError::invalid_parameter(
+                "Initial delay must be greater than zero.",
             ));
         }
 
@@ -622,6 +654,7 @@ impl Timer {
                     inner,
                     run_id,
                     interval,
+                    initial_delay,
                     recurring,
                     expiration_count,
                     callback,
@@ -724,7 +757,10 @@ impl TimerBuilder {
     /// Creates a builder for a recurring timer.
     pub fn recurring(interval: Duration) -> Self {
         Self {
-            kind: TimerKind::Recurring(interval),
+            kind: TimerKind::Recurring {
+                interval,
+                initial_delay: None,
+            },
             expiration_count: None,
             start_paused: false,
             events_enabled: true,
@@ -734,6 +770,19 @@ impl TimerBuilder {
     /// Sets the expiration count for a recurring timer.
     pub fn expiration_count(mut self, expiration_count: usize) -> Self {
         self.expiration_count = Some(expiration_count);
+        self
+    }
+
+    /// Sets an initial delay before the first recurring execution.
+    pub fn initial_delay(mut self, initial_delay: Duration) -> Self {
+        if let TimerKind::Recurring {
+            initial_delay: builder_initial_delay,
+            ..
+        } = &mut self.kind
+        {
+            *builder_initial_delay = Some(initial_delay);
+        }
+
         self
     }
 
@@ -762,13 +811,17 @@ impl TimerBuilder {
         match self.kind {
             TimerKind::Once(delay) => {
                 let _ = timer
-                    .start_internal(delay, callback, false, None, self.start_paused)
+                    .start_internal(delay, None, callback, false, None, self.start_paused)
                     .await?;
             }
-            TimerKind::Recurring(interval) => {
+            TimerKind::Recurring {
+                interval,
+                initial_delay,
+            } => {
                 let _ = timer
                     .start_internal(
                         interval,
+                        initial_delay,
                         callback,
                         true,
                         self.expiration_count,

@@ -59,6 +59,7 @@ pub(super) async fn run_timer<F>(
     inner: Arc<TimerInner>,
     run_id: u64,
     interval: Duration,
+    initial_delay: Option<Duration>,
     recurring: bool,
     expiration_count: Option<usize>,
     callback: F,
@@ -71,6 +72,7 @@ pub(super) async fn run_timer<F>(
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
     let mut current_interval = interval;
+    let mut next_sleep = initial_delay.unwrap_or(interval);
     let mut last_error = None;
 
     loop {
@@ -95,7 +97,7 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        let sleep = inner.runtime.sleep(current_interval);
+        let sleep = inner.runtime.sleep(next_sleep);
         tokio::pin!(sleep);
 
         loop {
@@ -184,6 +186,7 @@ pub(super) async fn run_timer<F>(
         }
 
         tick_count += 1;
+        next_sleep = current_interval;
 
         let statistics = update_statistics(
             &inner,
