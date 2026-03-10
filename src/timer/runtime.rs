@@ -2,6 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time;
 use tokio::time::Instant;
 
 #[cfg(feature = "logging")]
@@ -60,6 +61,7 @@ pub(super) async fn run_timer<F>(
     run_id: u64,
     interval: Duration,
     initial_delay: Option<Duration>,
+    callback_timeout: Option<Duration>,
     recurring: bool,
     expiration_count: Option<usize>,
     callback: F,
@@ -173,7 +175,15 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        match callback.execute().await {
+        let callback_result = match callback_timeout {
+            Some(timeout) => match time::timeout(timeout, callback.execute()).await {
+                Ok(result) => result,
+                Err(_) => Err(crate::errors::TimerError::callback_timed_out(timeout)),
+            },
+            None => callback.execute().await,
+        };
+
+        match callback_result {
             Ok(()) => {
                 success_count += 1;
             }

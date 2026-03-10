@@ -103,6 +103,32 @@ async fn recurring_initial_delay_is_available_from_the_public_api() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn callback_timeout_is_available_from_the_public_api() {
+    let timer = Timer::once(Duration::from_secs(1))
+        .callback_timeout(Duration::from_secs(2))
+        .start(|| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok::<(), timer_lib::TimerError>(())
+        })
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+
+    let outcome = timer.join().await.unwrap();
+    assert_eq!(outcome.statistics.failed_executions, 1);
+    assert!(outcome
+        .statistics
+        .last_error
+        .as_ref()
+        .is_some_and(|error| error.is_callback_timed_out()));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn completion_api_is_simple_to_consume() {
     let timer = Timer::new();
     let mut completion = timer.completion();

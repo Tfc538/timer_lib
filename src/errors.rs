@@ -4,6 +4,7 @@ use std::backtrace::Backtrace;
 use std::error::Error as StdError;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Represents timer-related failures.
 #[derive(Debug, Clone)]
@@ -18,6 +19,7 @@ enum TimerErrorKind {
     NotRunning,
     NotPaused,
     ReentrantOperation(String),
+    CallbackTimedOut(Duration),
     CallbackFailed(String),
 }
 
@@ -40,6 +42,11 @@ impl TimerError {
     /// Creates an error for operations that cannot safely run from the active callback.
     pub fn reentrant_operation(message: impl Into<String>) -> Self {
         Self::new(TimerErrorKind::ReentrantOperation(message.into()))
+    }
+
+    /// Creates an error for callback timeout expiration.
+    pub fn callback_timed_out(timeout: Duration) -> Self {
+        Self::new(TimerErrorKind::CallbackTimedOut(timeout))
     }
 
     /// Creates an error for callback execution failures.
@@ -88,6 +95,19 @@ impl TimerError {
         matches!(self.kind, TimerErrorKind::CallbackFailed(_))
     }
 
+    /// Returns true when the error indicates callback execution timed out.
+    pub fn is_callback_timed_out(&self) -> bool {
+        matches!(self.kind, TimerErrorKind::CallbackTimedOut(_))
+    }
+
+    /// Returns the callback timeout when available.
+    pub fn callback_timeout(&self) -> Option<Duration> {
+        match &self.kind {
+            TimerErrorKind::CallbackTimedOut(timeout) => Some(*timeout),
+            _ => None,
+        }
+    }
+
     /// Returns the callback failure message when available.
     pub fn callback_failure_message(&self) -> Option<&str> {
         match &self.kind {
@@ -119,6 +139,9 @@ impl Display for TimerError {
             TimerErrorKind::NotPaused => write!(f, "Operation requires a paused timer."),
             TimerErrorKind::ReentrantOperation(message) => {
                 write!(f, "Reentrant timer operation is not allowed: {message}")
+            }
+            TimerErrorKind::CallbackTimedOut(timeout) => {
+                write!(f, "Callback execution timed out after {timeout:?}")
             }
             TimerErrorKind::CallbackFailed(message) => {
                 write!(f, "Callback execution failed: {message}")
@@ -162,6 +185,10 @@ mod tests {
             "Reentrant timer operation is not allowed: stop() from callback"
         );
         assert_eq!(
+            TimerError::callback_timed_out(Duration::from_secs(2)).to_string(),
+            "Callback execution timed out after 2s"
+        );
+        assert_eq!(
             TimerError::callback_failed("boom").to_string(),
             "Callback execution failed: boom"
         );
@@ -177,6 +204,13 @@ mod tests {
         let callback = TimerError::callback_failed("boom");
         assert!(callback.is_callback_failed());
         assert_eq!(callback.callback_failure_message(), Some("boom"));
+
+        let timed_out = TimerError::callback_timed_out(Duration::from_millis(250));
+        assert!(timed_out.is_callback_timed_out());
+        assert_eq!(
+            timed_out.callback_timeout(),
+            Some(Duration::from_millis(250))
+        );
 
         let reentrant = TimerError::reentrant_operation("join()");
         assert!(reentrant.is_reentrant_operation());

@@ -336,6 +336,35 @@ async fn builder_initial_delay_controls_the_first_recurring_tick() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn callback_timeout_counts_as_a_failed_execution() {
+    let timer = Timer::once(Duration::from_secs(1))
+        .callback_timeout(Duration::from_secs(2))
+        .start(|| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok::<(), TimerError>(())
+        })
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+
+    let outcome = timer.join().await.unwrap();
+    assert_eq!(outcome.reason, TimerFinishReason::Completed);
+    assert_eq!(outcome.statistics.execution_count, 1);
+    assert_eq!(outcome.statistics.failed_executions, 1);
+    assert_eq!(outcome.statistics.successful_executions, 0);
+    assert!(outcome
+        .statistics
+        .last_error
+        .as_ref()
+        .is_some_and(TimerError::is_callback_timed_out));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn event_suppression_can_be_enabled_from_the_builder() {
     let timer = Timer::once(Duration::from_secs(1))
         .with_events_disabled()

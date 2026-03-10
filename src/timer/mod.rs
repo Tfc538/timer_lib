@@ -242,6 +242,7 @@ enum TimerKind {
 pub struct TimerBuilder {
     kind: TimerKind,
     expiration_count: Option<usize>,
+    callback_timeout: Option<Duration>,
     start_paused: bool,
     events_enabled: bool,
 }
@@ -321,7 +322,7 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        self.start_internal(delay, None, callback, false, None, false)
+        self.start_internal(delay, None, None, callback, false, None, false)
             .await
     }
 
@@ -381,6 +382,7 @@ impl Timer {
         self.start_internal(
             interval,
             initial_delay,
+            None,
             callback,
             true,
             expiration_count,
@@ -586,6 +588,7 @@ impl Timer {
         &self,
         interval: Duration,
         initial_delay: Option<Duration>,
+        callback_timeout: Option<Duration>,
         callback: F,
         recurring: bool,
         expiration_count: Option<usize>,
@@ -609,6 +612,12 @@ impl Timer {
         if initial_delay.is_some_and(|delay| delay.is_zero()) {
             return Err(TimerError::invalid_parameter(
                 "Initial delay must be greater than zero.",
+            ));
+        }
+
+        if callback_timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return Err(TimerError::invalid_parameter(
+                "Callback timeout must be greater than zero.",
             ));
         }
 
@@ -655,6 +664,7 @@ impl Timer {
                     run_id,
                     interval,
                     initial_delay,
+                    callback_timeout,
                     recurring,
                     expiration_count,
                     callback,
@@ -749,6 +759,7 @@ impl TimerBuilder {
         Self {
             kind: TimerKind::Once(delay),
             expiration_count: None,
+            callback_timeout: None,
             start_paused: false,
             events_enabled: true,
         }
@@ -762,6 +773,7 @@ impl TimerBuilder {
                 initial_delay: None,
             },
             expiration_count: None,
+            callback_timeout: None,
             start_paused: false,
             events_enabled: true,
         }
@@ -783,6 +795,12 @@ impl TimerBuilder {
             *builder_initial_delay = Some(initial_delay);
         }
 
+        self
+    }
+
+    /// Sets a timeout for each callback execution.
+    pub fn callback_timeout(mut self, callback_timeout: Duration) -> Self {
+        self.callback_timeout = Some(callback_timeout);
         self
     }
 
@@ -811,7 +829,15 @@ impl TimerBuilder {
         match self.kind {
             TimerKind::Once(delay) => {
                 let _ = timer
-                    .start_internal(delay, None, callback, false, None, self.start_paused)
+                    .start_internal(
+                        delay,
+                        None,
+                        self.callback_timeout,
+                        callback,
+                        false,
+                        None,
+                        self.start_paused,
+                    )
                     .await?;
             }
             TimerKind::Recurring {
@@ -822,6 +848,7 @@ impl TimerBuilder {
                     .start_internal(
                         interval,
                         initial_delay,
+                        self.callback_timeout,
                         callback,
                         true,
                         self.expiration_count,
