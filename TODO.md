@@ -1,0 +1,23 @@
+# TODO
+
+- [x] Audit the async timer refactor.
+- [x] Fix the `Timer::wait()` completion race.
+- [x] Split the timer module into smaller Rust files.
+- [x] Add regression coverage for the completion wait path.
+- [x] Rename `TimerManager` to `TimerRegistry`.
+- [x] Add graceful stop, immediate cancel, and join outcomes.
+- [x] Add timer event subscriptions.
+- [x] Add consumer-facing integration tests.
+- [x] Add an internal runtime abstraction for sleeping and task spawning.
+- [x] Add lifecycle/event waiting helpers for common consumer flows.
+- [x] Add a builder-based timer API to reduce boilerplate.
+- [x] Add stress and concurrency-focused tests.
+- [x] Benchmark timer runtime and event overhead.
+- [x] Revisit the public error design for longer-term stability.
+- [x] Harden reentrant callback control paths.
+- [x] Add a lossless completion subscription alongside broadcast events.
+- [x] Expand `TimerRegistry` with per-timer and bulk ergonomic helpers.
+- [x] Deepen `TimerBuilder` with paused-start and event-control options.
+- [x] Reduce avoidable runtime/event overhead in the timer loop.
+- [x] Add stronger lifecycle invariant and bizarre reentrancy tests.
+- [x] Align docs and README with the new async-native API.

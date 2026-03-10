@@ -7,17 +7,22 @@ description = "A feature-rich Rust library for creating and managing timers."
 license = "MIT"
 repository = "https://github.com/Tfc538/timer_lib"
 homepage = "https://github.com/Tfc538/timer_lib"
-documentation = "https://docs.rs/timer_lib"
+documentation = "https://docs.rs/timer-lib"
 readme = "README.md"
 keywords = ["timer", "async", "recurring", "scheduler", "timeout"]
 categories = ["asynchronous"]
 
 [dependencies]
 async-trait = "0.1.83"
-futures = "0.3.31"
 log = { version = "0.4", optional = true }
-thiserror = "2.0.3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [features]
 logging = ["log"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "timer_bench"
+harness = false
