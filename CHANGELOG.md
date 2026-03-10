@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 *None*
 
+## [0.3.0] - 2026-03-10
+
+### Added
+
+- `RecurringSchedule` as the public recurring-timer configuration type.
+- `RecurringCadence` with fixed-delay and fixed-rate scheduling modes.
+
+### Changed
+
+- Made recurring timer startup APIs schedule-based instead of interval-based.
+- Moved recurring-only options like initial delay and expiration count onto `RecurringSchedule`.
+- Updated tests, examples, and crate docs to reflect the new recurring API shape.
+
 ## [0.2.1] - 2026-03-10
 
 ### Added

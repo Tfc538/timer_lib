@@ -27,7 +27,7 @@ It is built around a small set of handle types:
 
 ```toml
 [dependencies]
-timer-lib = "0.2.1"
+timer-lib = "0.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ```
 
@@ -58,7 +58,7 @@ async fn main() {
 
 ```rust
 use std::time::Duration;
-use timer_lib::{Timer, TimerFinishReason};
+use timer_lib::{RecurringSchedule, Timer, TimerFinishReason};
 
 #[tokio::main]
 async fn main() {
