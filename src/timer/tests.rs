@@ -412,3 +412,47 @@ async fn event_suppression_can_be_enabled_from_the_builder() {
         TimerFinishReason::Completed
     );
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn event_helpers_wait_for_pause_resume_and_stop() {
+    let timer = Timer::new();
+    let mut events = timer.subscribe();
+
+    timer
+        .start_recurring(Duration::from_secs(2), || async { Ok(()) }, None)
+        .await
+        .unwrap();
+    settle().await;
+
+    timer.pause().await.unwrap();
+    assert!(matches!(
+        events.wait_paused().await,
+        Some(TimerEvent::Paused { .. })
+    ));
+
+    timer.resume().await.unwrap();
+    assert!(matches!(
+        events.wait_resumed().await,
+        Some(TimerEvent::Resumed { .. })
+    ));
+
+    let stopped = timer.stop().await.unwrap();
+    let seen = events.wait_stopped().await.unwrap();
+    assert_eq!(seen, stopped);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn event_helpers_wait_for_cancelled_outcomes() {
+    let timer = Timer::new();
+    let mut events = timer.subscribe();
+
+    timer
+        .start_recurring(Duration::from_secs(5), || async { Ok(()) }, None)
+        .await
+        .unwrap();
+    settle().await;
+
+    let cancelled = timer.cancel().await.unwrap();
+    let seen = events.wait_cancelled().await.unwrap();
+    assert_eq!(seen, cancelled);
+}

@@ -160,10 +160,48 @@ impl TimerEvents {
         }
     }
 
+    /// Waits for the next paused event.
+    pub async fn wait_paused(&mut self) -> Option<TimerEvent> {
+        loop {
+            if let event @ TimerEvent::Paused { .. } = self.recv().await? {
+                return Some(event);
+            }
+        }
+    }
+
+    /// Waits for the next resumed event.
+    pub async fn wait_resumed(&mut self) -> Option<TimerEvent> {
+        loop {
+            if let event @ TimerEvent::Resumed { .. } = self.recv().await? {
+                return Some(event);
+            }
+        }
+    }
+
     /// Waits for the next finished event.
     pub async fn wait_finished(&mut self) -> Option<TimerOutcome> {
         loop {
             if let TimerEvent::Finished(outcome) = self.recv().await? {
+                return Some(outcome);
+            }
+        }
+    }
+
+    /// Waits for the next finished event with a stopped outcome.
+    pub async fn wait_stopped(&mut self) -> Option<TimerOutcome> {
+        self.wait_finished_reason(TimerFinishReason::Stopped).await
+    }
+
+    /// Waits for the next finished event with a cancelled outcome.
+    pub async fn wait_cancelled(&mut self) -> Option<TimerOutcome> {
+        self.wait_finished_reason(TimerFinishReason::Cancelled)
+            .await
+    }
+
+    async fn wait_finished_reason(&mut self, reason: TimerFinishReason) -> Option<TimerOutcome> {
+        loop {
+            let outcome = self.wait_finished().await?;
+            if outcome.reason == reason {
                 return Some(outcome);
             }
         }
