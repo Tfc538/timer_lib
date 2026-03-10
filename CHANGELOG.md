@@ -15,7 +15,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Timer statistics (execution count, elapsed time).
 - Comprehensive error handling.
 
-## Unreleased (1.1.0)
-### Added
-- Support for scheduled timers.
-- Improved performance and stability.
+## Unreleased (0.2.0)
+### Changed
+- Raised the minimum resolved `bytes` dependency to 1.11.1.
