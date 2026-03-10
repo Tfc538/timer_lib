@@ -1,7 +1,8 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex as StdMutex;
 use tokio::task::yield_now;
-use tokio::time::advance;
+use tokio::time::{advance, Instant};
 
 struct CountingCallback {
     executions: Arc<AtomicUsize>,
@@ -68,12 +69,11 @@ async fn stop_is_graceful_and_cancel_is_immediate() {
 
     timer
         .start_recurring(
-            Duration::from_secs(1),
+            RecurringSchedule::new(Duration::from_secs(1)),
             CountingCallback {
                 executions: Arc::clone(&executions),
                 fail: false,
             },
-            None,
         )
         .await
         .unwrap();
@@ -86,7 +86,9 @@ async fn stop_is_graceful_and_cancel_is_immediate() {
     assert_eq!(executions.load(Ordering::SeqCst), 1);
 
     timer
-        .start_recurring(Duration::from_secs(10), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(10)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
     let cancelled = timer.cancel().await.unwrap();
@@ -98,7 +100,9 @@ async fn replacing_a_run_records_replaced_outcome() {
     let timer = Timer::new();
 
     let first_run = timer
-        .start_recurring(Duration::from_secs(10), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(10)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
 
@@ -120,12 +124,11 @@ async fn interval_adjustments_apply_to_future_ticks() {
 
     timer
         .start_recurring(
-            Duration::from_secs(5),
+            RecurringSchedule::new(Duration::from_secs(5)),
             CountingCallback {
                 executions: Arc::clone(&executions),
                 fail: false,
             },
-            None,
         )
         .await
         .unwrap();
@@ -152,7 +155,10 @@ async fn events_are_emitted_for_key_lifecycle_changes() {
     let mut events = timer.subscribe();
 
     let run_id = timer
-        .start_recurring(Duration::from_secs(1), || async { Ok(()) }, Some(1))
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(1)).with_expiration_count(1),
+            || async { Ok(()) },
+        )
         .await
         .unwrap();
 
@@ -181,14 +187,14 @@ async fn events_are_emitted_for_key_lifecycle_changes() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn builder_starts_recurring_timers_with_less_boilerplate() {
     let executions = Arc::new(AtomicUsize::new(0));
-    let timer = Timer::recurring(Duration::from_secs(1))
-        .expiration_count(2)
-        .start(CountingCallback {
-            executions: Arc::clone(&executions),
-            fail: false,
-        })
-        .await
-        .unwrap();
+    let timer =
+        Timer::recurring(RecurringSchedule::new(Duration::from_secs(1)).with_expiration_count(2))
+            .start(CountingCallback {
+                executions: Arc::clone(&executions),
+                fail: false,
+            })
+            .await
+            .unwrap();
 
     advance(Duration::from_secs(2)).await;
     settle().await;
@@ -204,14 +210,14 @@ async fn recurring_timers_can_delay_the_first_tick() {
     let timer = Timer::new();
 
     timer
-        .start_recurring_with_delay(
-            Duration::from_secs(5),
-            Some(Duration::from_secs(2)),
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(5))
+                .with_initial_delay(Duration::from_secs(2))
+                .with_expiration_count(2),
             CountingCallback {
                 executions: Arc::clone(&executions),
                 fail: false,
             },
-            Some(2),
         )
         .await
         .unwrap();
@@ -283,12 +289,12 @@ async fn completion_wait_advances_to_the_next_unseen_outcome() {
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn paused_builder_start_waits_for_resume() {
-    let timer = Timer::recurring(Duration::from_secs(1))
-        .expiration_count(1)
-        .paused_start()
-        .start(|| async { Ok(()) })
-        .await
-        .unwrap();
+    let timer =
+        Timer::recurring(RecurringSchedule::new(Duration::from_secs(1)).with_expiration_count(1))
+            .paused_start()
+            .start(|| async { Ok(()) })
+            .await
+            .unwrap();
 
     advance(Duration::from_secs(5)).await;
     settle().await;
@@ -307,15 +313,17 @@ async fn paused_builder_start_waits_for_resume() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn builder_initial_delay_controls_the_first_recurring_tick() {
     let executions = Arc::new(AtomicUsize::new(0));
-    let timer = Timer::recurring(Duration::from_secs(3))
-        .initial_delay(Duration::from_secs(1))
-        .expiration_count(2)
-        .start(CountingCallback {
-            executions: Arc::clone(&executions),
-            fail: false,
-        })
-        .await
-        .unwrap();
+    let timer = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(3))
+            .with_initial_delay(Duration::from_secs(1))
+            .with_expiration_count(2),
+    )
+    .start(CountingCallback {
+        executions: Arc::clone(&executions),
+        fail: false,
+    })
+    .await
+    .unwrap();
     settle().await;
 
     advance(Duration::from_secs(1)).await;
@@ -419,7 +427,9 @@ async fn event_helpers_wait_for_pause_resume_and_stop() {
     let mut events = timer.subscribe();
 
     timer
-        .start_recurring(Duration::from_secs(2), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(2)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
     settle().await;
@@ -447,7 +457,9 @@ async fn event_helpers_wait_for_cancelled_outcomes() {
     let mut events = timer.subscribe();
 
     timer
-        .start_recurring(Duration::from_secs(5), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(5)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
     settle().await;
@@ -455,4 +467,85 @@ async fn event_helpers_wait_for_cancelled_outcomes() {
     let cancelled = timer.cancel().await.unwrap();
     let seen = events.wait_cancelled().await.unwrap();
     assert_eq!(seen, cancelled);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn fixed_rate_and_fixed_delay_schedules_diverge_under_slow_callbacks() {
+    let fixed_delay_starts = Arc::new(StdMutex::new(Vec::new()));
+    let fixed_rate_starts = Arc::new(StdMutex::new(Vec::new()));
+    let fixed_delay_base = Instant::now();
+    let fixed_rate_base = fixed_delay_base;
+
+    let fixed_delay_timer = Timer::new();
+    let fixed_delay_starts_for_callback = Arc::clone(&fixed_delay_starts);
+    fixed_delay_timer
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(5))
+                .fixed_delay()
+                .with_expiration_count(2),
+            move || {
+                let starts = Arc::clone(&fixed_delay_starts_for_callback);
+                async move {
+                    starts
+                        .lock()
+                        .unwrap()
+                        .push((Instant::now() - fixed_delay_base).as_secs());
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    Ok::<(), TimerError>(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    let fixed_rate_timer = Timer::new();
+    let fixed_rate_starts_for_callback = Arc::clone(&fixed_rate_starts);
+    fixed_rate_timer
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(5))
+                .fixed_rate()
+                .with_expiration_count(2),
+            move || {
+                let starts = Arc::clone(&fixed_rate_starts_for_callback);
+                async move {
+                    starts
+                        .lock()
+                        .unwrap()
+                        .push((Instant::now() - fixed_rate_base).as_secs());
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    Ok::<(), TimerError>(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+
+    assert_eq!(*fixed_delay_starts.lock().unwrap(), vec![5]);
+    assert_eq!(*fixed_rate_starts.lock().unwrap(), vec![5]);
+
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+
+    advance(Duration::from_secs(3)).await;
+    settle().await;
+
+    assert_eq!(*fixed_rate_starts.lock().unwrap(), vec![5, 10]);
+    assert_eq!(*fixed_delay_starts.lock().unwrap(), vec![5]);
+
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+
+    assert_eq!(*fixed_delay_starts.lock().unwrap(), vec![5, 12]);
+    assert_eq!(
+        fixed_delay_timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+    assert_eq!(
+        fixed_rate_timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
 }

@@ -35,7 +35,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 ```rust
 use std::time::Duration;
-use timer_lib::{Timer, TimerFinishReason};
+use timer_lib::{RecurringSchedule, Timer, TimerFinishReason};
 
 #[tokio::main]
 async fn main() {
@@ -62,8 +62,9 @@ use timer_lib::{Timer, TimerFinishReason};
 
 #[tokio::main]
 async fn main() {
-    let timer = Timer::recurring(Duration::from_secs(1))
-        .expiration_count(3)
+    let timer = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(1)).with_expiration_count(3),
+    )
         .start(|| async {
             println!("tick");
             Ok(())

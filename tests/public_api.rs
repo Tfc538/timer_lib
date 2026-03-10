@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use timer_lib::{Timer, TimerEvent, TimerFinishReason, TimerRegistry};
+use timer_lib::{RecurringSchedule, Timer, TimerEvent, TimerFinishReason, TimerRegistry};
 use tokio::task::yield_now;
 use tokio::time::advance;
 
@@ -55,7 +55,9 @@ async fn lifecycle_wait_helpers_are_consumable_from_the_public_api() {
     let timer = Timer::new();
     let mut events = timer.subscribe();
     timer
-        .start_recurring(Duration::from_secs(2), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(2)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
     settle().await;
@@ -110,12 +112,14 @@ async fn builder_api_is_simple_to_use() {
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn recurring_initial_delay_is_available_from_the_public_api() {
-    let timer = Timer::recurring(Duration::from_secs(5))
-        .initial_delay(Duration::from_secs(2))
-        .expiration_count(1)
-        .start(|| async { Ok(()) })
-        .await
-        .unwrap();
+    let timer = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(5))
+            .with_initial_delay(Duration::from_secs(2))
+            .with_expiration_count(1),
+    )
+    .start(|| async { Ok(()) })
+    .await
+    .unwrap();
 
     advance(Duration::from_secs(1)).await;
     settle().await;
@@ -237,7 +241,10 @@ async fn registry_ergonomics_cover_common_bulk_operations() {
 async fn registry_pause_and_resume_helpers_are_available_from_the_public_api() {
     let registry = TimerRegistry::new();
     let (timer_id, timer) = registry
-        .start_recurring(Duration::from_secs(2), || async { Ok(()) }, Some(1))
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(2)).with_expiration_count(1),
+            || async { Ok(()) },
+        )
         .await
         .unwrap();
     settle().await;
@@ -252,6 +259,28 @@ async fn registry_pause_and_resume_helpers_are_available_from_the_public_api() {
     registry.resume_all().await;
     advance(Duration::from_secs(2)).await;
     settle().await;
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn recurring_schedule_is_the_public_configuration_entry_point() {
+    let timer = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(3))
+            .with_initial_delay(Duration::from_secs(1))
+            .fixed_rate()
+            .with_expiration_count(1),
+    )
+    .start(|| async { Ok(()) })
+    .await
+    .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+
     assert_eq!(
         timer.join().await.unwrap().reason,
         TimerFinishReason::Completed

@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use timer_lib::{Timer, TimerFinishReason, TimerRegistry};
+use timer_lib::{RecurringSchedule, Timer, TimerFinishReason, TimerRegistry};
 use tokio::task::yield_now;
 use tokio::time::{advance, timeout};
 
@@ -92,7 +92,10 @@ async fn registry_cancel_all_stops_many_recurring_timers_concurrently() {
 
     for _ in 0..TIMER_COUNT {
         let (timer_id, timer) = registry
-            .start_recurring(Duration::from_millis(50), || async { Ok(()) }, None)
+            .start_recurring(
+                RecurringSchedule::new(Duration::from_millis(50)),
+                || async { Ok(()) },
+            )
             .await
             .unwrap();
         assert!(registry.get(timer_id).await.is_some());

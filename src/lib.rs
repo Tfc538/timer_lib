@@ -39,15 +39,14 @@
 //!
 //! ```rust
 //! use std::time::Duration;
-//! use timer_lib::{Timer, TimerError, TimerFinishReason};
+//! use timer_lib::{RecurringSchedule, Timer, TimerError, TimerFinishReason};
 //!
 //! # let runtime = tokio::runtime::Builder::new_current_thread()
 //! #     .enable_all()
 //! #     .build()
 //! #     .unwrap();
 //! # runtime.block_on(async {
-//! let timer = Timer::recurring(Duration::from_millis(10))
-//!     .expiration_count(2)
+//! let timer = Timer::recurring(RecurringSchedule::new(Duration::from_millis(10)).with_expiration_count(2))
 //!     .start(|| async { Ok::<(), TimerError>(()) })
 //!     .await
 //!     .unwrap();
@@ -99,8 +98,9 @@ pub use registry::TimerRegistry;
 #[deprecated(note = "Use TimerRegistry instead.")]
 pub type TimerManager = TimerRegistry;
 pub use timer::{
-    RetryPolicy, Timer, TimerBuilder, TimerCallback, TimerCompletion, TimerEvent, TimerEvents,
-    TimerFinishReason, TimerOutcome, TimerState, TimerStatistics,
+    RecurringCadence, RecurringSchedule, RetryPolicy, Timer, TimerBuilder, TimerCallback,
+    TimerCompletion, TimerEvent, TimerEvents, TimerFinishReason, TimerOutcome, TimerState,
+    TimerStatistics,
 };
 
 // Rust guideline compliant 2026-02-21

@@ -9,8 +9,8 @@ use tokio::time::Instant;
 use log::error;
 
 use super::{
-    RunConfig, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason, TimerInner,
-    TimerOutcome, TimerState,
+    RecurringCadence, RunConfig, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason,
+    TimerInner, TimerOutcome, TimerState,
 };
 
 tokio::task_local! {
@@ -66,11 +66,13 @@ pub(super) async fn run_timer<F>(
     F: TimerCallback + 'static,
 {
     let started_at = inner.runtime.now();
+    let first_delay = config.initial_delay.unwrap_or(config.interval);
     let mut tick_count = 0usize;
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
     let mut current_interval = config.interval;
-    let mut next_sleep = config.initial_delay.unwrap_or(config.interval);
+    let mut next_sleep = first_delay;
+    let mut next_deadline = config.recurring.then_some(started_at + first_delay);
     let mut last_error = None;
 
     loop {
@@ -107,6 +109,12 @@ pub(super) async fn run_timer<F>(
                         emit_event(&inner, TimerEvent::Paused { run_id });
                         match wait_while_paused(&inner, &mut rx, &mut current_interval).await {
                             RunControl::Continue => {
+                                reset_recurring_deadline(
+                                    &inner,
+                                    &config,
+                                    &mut next_deadline,
+                                    current_interval,
+                                );
                                 sleep.as_mut().reset(Instant::now() + current_interval);
                             }
                             RunControl::Finish(reason) => {
@@ -165,6 +173,12 @@ pub(super) async fn run_timer<F>(
                     }
                     Some(TimerCommand::SetInterval(new_interval)) => {
                         current_interval = new_interval;
+                        reset_recurring_deadline(
+                            &inner,
+                            &config,
+                            &mut next_deadline,
+                            current_interval,
+                        );
                         sleep.as_mut().reset(Instant::now() + current_interval);
                     }
                 }
@@ -208,7 +222,7 @@ pub(super) async fn run_timer<F>(
         }
 
         tick_count += 1;
-        next_sleep = current_interval;
+        next_sleep = next_sleep_duration(&inner, &config, &mut next_deadline, current_interval);
 
         let statistics = update_statistics(
             &inner,
@@ -265,6 +279,34 @@ pub(super) async fn run_timer<F>(
             finish_run(&inner, outcome).await;
             return;
         }
+    }
+}
+
+fn next_sleep_duration(
+    inner: &Arc<TimerInner>,
+    config: &RunConfig,
+    next_deadline: &mut Option<Instant>,
+    current_interval: Duration,
+) -> Duration {
+    match config.cadence {
+        RecurringCadence::FixedDelay => current_interval,
+        RecurringCadence::FixedRate => {
+            let now = inner.runtime.now();
+            let deadline = next_deadline.get_or_insert(now + current_interval);
+            *deadline += current_interval;
+            deadline.saturating_duration_since(now)
+        }
+    }
+}
+
+fn reset_recurring_deadline(
+    inner: &Arc<TimerInner>,
+    config: &RunConfig,
+    next_deadline: &mut Option<Instant>,
+    current_interval: Duration,
+) {
+    if config.recurring && config.cadence == RecurringCadence::FixedRate {
+        *next_deadline = Some(inner.runtime.now() + current_interval);
     }
 }
 

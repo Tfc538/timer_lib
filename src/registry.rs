@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::errors::TimerError;
-use crate::timer::{Timer, TimerCallback, TimerOutcome, TimerState};
+use crate::timer::{RecurringSchedule, Timer, TimerCallback, TimerOutcome, TimerState};
 
 /// A registry for tracking timers by identifier.
 #[derive(Clone, Default)]
@@ -51,17 +51,14 @@ impl TimerRegistry {
     /// Starts and registers a recurring timer.
     pub async fn start_recurring<F>(
         &self,
-        interval: Duration,
+        schedule: RecurringSchedule,
         callback: F,
-        expiration_count: Option<usize>,
     ) -> Result<(u64, Timer), TimerError>
     where
         F: TimerCallback + 'static,
     {
         let timer = Timer::new();
-        let _ = timer
-            .start_recurring(interval, callback, expiration_count)
-            .await?;
+        let _ = timer.start_recurring(schedule, callback).await?;
         let id = self.insert(timer.clone()).await;
         Ok((id, timer))
     }
@@ -234,7 +231,9 @@ mod tests {
             .await
             .unwrap();
         let (recurring_id, recurring_timer) = registry
-            .start_recurring(Duration::from_secs(2), || async { Ok(()) }, None)
+            .start_recurring(RecurringSchedule::new(Duration::from_secs(2)), || async {
+                Ok(())
+            })
             .await
             .unwrap();
 
@@ -274,7 +273,10 @@ mod tests {
     async fn registry_can_pause_and_resume_tracked_timers() {
         let registry = TimerRegistry::new();
         let (timer_id, timer) = registry
-            .start_recurring(Duration::from_secs(2), || async { Ok(()) }, Some(1))
+            .start_recurring(
+                RecurringSchedule::new(Duration::from_secs(2)).with_expiration_count(1),
+                || async { Ok(()) },
+            )
             .await
             .unwrap();
         settle().await;

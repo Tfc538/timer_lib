@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::time::Duration;
-use timer_lib::{Timer, TimerCallback, TimerError, TimerRegistry};
+use timer_lib::{RecurringSchedule, Timer, TimerCallback, TimerError, TimerRegistry};
 use tokio::time::sleep;
 
 struct OneTimeCallback;
@@ -40,11 +40,11 @@ async fn main() {
         .unwrap();
     registry.insert(one_time_timer.clone()).await;
 
-    let recurring_timer = Timer::recurring(Duration::from_secs(3))
-        .expiration_count(5)
-        .start(RecurringCallback)
-        .await
-        .unwrap();
+    let recurring_timer =
+        Timer::recurring(RecurringSchedule::new(Duration::from_secs(3)).with_expiration_count(5))
+            .start(RecurringCallback)
+            .await
+            .unwrap();
     let recurring_timer_id = registry.insert(recurring_timer.clone()).await;
     let mut recurring_events = recurring_timer.subscribe();
     let mut recurring_completion = recurring_timer.completion();

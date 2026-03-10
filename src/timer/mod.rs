@@ -64,6 +64,84 @@ pub struct TimerOutcome {
     pub statistics: TimerStatistics,
 }
 
+/// Defines how recurring timers schedule the next execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecurringCadence {
+    FixedDelay,
+    FixedRate,
+}
+
+/// Configures the schedule for a recurring timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecurringSchedule {
+    interval: Duration,
+    initial_delay: Option<Duration>,
+    cadence: RecurringCadence,
+    expiration_count: Option<usize>,
+}
+
+impl RecurringSchedule {
+    /// Creates a recurring schedule from a fixed interval.
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            initial_delay: None,
+            cadence: RecurringCadence::FixedDelay,
+            expiration_count: None,
+        }
+    }
+
+    /// Returns the recurring interval.
+    pub fn interval(self) -> Duration {
+        self.interval
+    }
+
+    /// Returns the initial delay before the first execution.
+    pub fn initial_delay(self) -> Option<Duration> {
+        self.initial_delay
+    }
+
+    /// Returns the cadence used for the recurring schedule.
+    pub fn cadence(self) -> RecurringCadence {
+        self.cadence
+    }
+
+    /// Returns the optional execution limit.
+    pub fn expiration_count(self) -> Option<usize> {
+        self.expiration_count
+    }
+
+    /// Sets an initial delay before the first recurring execution.
+    pub fn with_initial_delay(mut self, initial_delay: Duration) -> Self {
+        self.initial_delay = Some(initial_delay);
+        self
+    }
+
+    /// Sets the cadence used for subsequent executions.
+    pub fn with_cadence(mut self, cadence: RecurringCadence) -> Self {
+        self.cadence = cadence;
+        self
+    }
+
+    /// Uses fixed-delay cadence semantics.
+    pub fn fixed_delay(mut self) -> Self {
+        self.cadence = RecurringCadence::FixedDelay;
+        self
+    }
+
+    /// Uses fixed-rate cadence semantics.
+    pub fn fixed_rate(mut self) -> Self {
+        self.cadence = RecurringCadence::FixedRate;
+        self
+    }
+
+    /// Limits the number of recurring executions.
+    pub fn with_expiration_count(mut self, expiration_count: usize) -> Self {
+        self.expiration_count = Some(expiration_count);
+        self
+    }
+}
+
 /// Configures retry behavior for failed callback executions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -292,22 +370,19 @@ pub(super) struct RunConfig {
     pub(super) callback_timeout: Option<Duration>,
     pub(super) retry_policy: Option<RetryPolicy>,
     pub(super) recurring: bool,
+    pub(super) cadence: RecurringCadence,
     pub(super) expiration_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum TimerKind {
     Once(Duration),
-    Recurring {
-        interval: Duration,
-        initial_delay: Option<Duration>,
-    },
+    Recurring(RecurringSchedule),
 }
 
 /// Builds and starts a timer with less boilerplate.
 pub struct TimerBuilder {
     kind: TimerKind,
-    expiration_count: Option<usize>,
     callback_timeout: Option<Duration>,
     retry_policy: Option<RetryPolicy>,
     start_paused: bool,
@@ -365,9 +440,9 @@ impl Timer {
         TimerBuilder::once(delay)
     }
 
-    /// Creates a timer builder configured for a recurring run.
-    pub fn recurring(interval: Duration) -> TimerBuilder {
-        TimerBuilder::recurring(interval)
+    /// Creates a timer builder configured for a recurring schedule.
+    pub fn recurring(schedule: RecurringSchedule) -> TimerBuilder {
+        TimerBuilder::recurring(schedule)
     }
 
     /// Subscribes to future timer events.
@@ -396,6 +471,7 @@ impl Timer {
                 callback_timeout: None,
                 retry_policy: None,
                 recurring: false,
+                cadence: RecurringCadence::FixedDelay,
                 expiration_count: None,
             },
             callback,
@@ -417,59 +493,42 @@ impl Timer {
         self.start_once(delay, callback).await
     }
 
-    /// Starts a recurring timer with an optional expiration count.
+    /// Starts a recurring timer with the provided schedule.
     pub async fn start_recurring<F>(
         &self,
-        interval: Duration,
+        schedule: RecurringSchedule,
         callback: F,
-        expiration_count: Option<usize>,
-    ) -> Result<u64, TimerError>
-    where
-        F: TimerCallback + 'static,
-    {
-        self.start_recurring_with_delay(interval, None, callback, expiration_count)
-            .await
-    }
-
-    /// Starts a recurring timer from an async closure.
-    pub async fn start_recurring_fn<F, Fut>(
-        &self,
-        interval: Duration,
-        callback: F,
-        expiration_count: Option<usize>,
-    ) -> Result<u64, TimerError>
-    where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), TimerError>> + Send + 'static,
-    {
-        self.start_recurring(interval, callback, expiration_count)
-            .await
-    }
-
-    /// Starts a recurring timer with an optional initial delay.
-    pub async fn start_recurring_with_delay<F>(
-        &self,
-        interval: Duration,
-        initial_delay: Option<Duration>,
-        callback: F,
-        expiration_count: Option<usize>,
     ) -> Result<u64, TimerError>
     where
         F: TimerCallback + 'static,
     {
         self.start_internal(
             RunConfig {
-                interval,
-                initial_delay,
+                interval: schedule.interval,
+                initial_delay: schedule.initial_delay,
                 callback_timeout: None,
                 retry_policy: None,
                 recurring: true,
-                expiration_count,
+                cadence: schedule.cadence,
+                expiration_count: schedule.expiration_count,
             },
             callback,
             false,
         )
         .await
+    }
+
+    /// Starts a recurring timer from an async closure.
+    pub async fn start_recurring_fn<F, Fut>(
+        &self,
+        schedule: RecurringSchedule,
+        callback: F,
+    ) -> Result<u64, TimerError>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), TimerError>> + Send + 'static,
+    {
+        self.start_recurring(schedule, callback).await
     }
 
     /// Pauses a running timer.
@@ -827,7 +886,6 @@ impl TimerBuilder {
     pub fn once(delay: Duration) -> Self {
         Self {
             kind: TimerKind::Once(delay),
-            expiration_count: None,
             callback_timeout: None,
             retry_policy: None,
             start_paused: false,
@@ -835,38 +893,15 @@ impl TimerBuilder {
         }
     }
 
-    /// Creates a builder for a recurring timer.
-    pub fn recurring(interval: Duration) -> Self {
+    /// Creates a builder for a recurring schedule.
+    pub fn recurring(schedule: RecurringSchedule) -> Self {
         Self {
-            kind: TimerKind::Recurring {
-                interval,
-                initial_delay: None,
-            },
-            expiration_count: None,
+            kind: TimerKind::Recurring(schedule),
             callback_timeout: None,
             retry_policy: None,
             start_paused: false,
             events_enabled: true,
         }
-    }
-
-    /// Sets the expiration count for a recurring timer.
-    pub fn expiration_count(mut self, expiration_count: usize) -> Self {
-        self.expiration_count = Some(expiration_count);
-        self
-    }
-
-    /// Sets an initial delay before the first recurring execution.
-    pub fn initial_delay(mut self, initial_delay: Duration) -> Self {
-        if let TimerKind::Recurring {
-            initial_delay: builder_initial_delay,
-            ..
-        } = &mut self.kind
-        {
-            *builder_initial_delay = Some(initial_delay);
-        }
-
-        self
     }
 
     /// Sets a timeout for each callback execution.
@@ -919,6 +954,7 @@ impl TimerBuilder {
                             callback_timeout: self.callback_timeout,
                             retry_policy: self.retry_policy,
                             recurring: false,
+                            cadence: RecurringCadence::FixedDelay,
                             expiration_count: None,
                         },
                         callback,
@@ -926,19 +962,17 @@ impl TimerBuilder {
                     )
                     .await?;
             }
-            TimerKind::Recurring {
-                interval,
-                initial_delay,
-            } => {
+            TimerKind::Recurring(schedule) => {
                 let _ = timer
                     .start_internal(
                         RunConfig {
-                            interval,
-                            initial_delay,
+                            interval: schedule.interval,
+                            initial_delay: schedule.initial_delay,
                             callback_timeout: self.callback_timeout,
                             retry_policy: self.retry_policy,
                             recurring: true,
-                            expiration_count: self.expiration_count,
+                            cadence: schedule.cadence,
+                            expiration_count: schedule.expiration_count,
                         },
                         callback,
                         self.start_paused,

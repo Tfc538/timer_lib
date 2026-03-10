@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use timer_lib::{Timer, TimerFinishReason, TimerRegistry};
+use timer_lib::{RecurringSchedule, Timer, TimerFinishReason, TimerRegistry};
 use tokio::task::yield_now;
 use tokio::time::{advance, timeout};
 
@@ -20,7 +20,10 @@ async fn lagged_event_subscriber_can_still_observe_finished() {
     let mut events = timer.subscribe();
 
     let run_id = timer
-        .start_recurring(Duration::from_secs(1), || async { Ok(()) }, Some(80))
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_secs(1)).with_expiration_count(80),
+            || async { Ok(()) },
+        )
         .await
         .unwrap();
 
@@ -36,7 +39,9 @@ async fn lagged_event_subscriber_can_still_observe_finished() {
 async fn join_is_idempotent_after_cancel() {
     let timer = Timer::new();
     let run_id = timer
-        .start_recurring(Duration::from_secs(30), || async { Ok(()) }, None)
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(30)), || async {
+            Ok(())
+        })
         .await
         .unwrap();
 
@@ -73,7 +78,10 @@ async fn removed_timer_keeps_running_after_leaving_registry() {
 async fn concurrent_stop_cancel_and_join_do_not_deadlock() {
     let timer = Timer::new();
     let run_id = timer
-        .start_recurring(Duration::from_millis(50), || async { Ok(()) }, None)
+        .start_recurring(
+            RecurringSchedule::new(Duration::from_millis(50)),
+            || async { Ok(()) },
+        )
         .await
         .unwrap();
 
@@ -138,20 +146,16 @@ async fn callback_can_request_stop_on_itself_without_deadlocking() {
     let saw_reentrant_error_in_callback = Arc::clone(&saw_reentrant_error);
 
     timer
-        .start_recurring(
-            Duration::from_secs(1),
-            move || {
-                let timer = timer_for_callback.clone();
-                let saw_reentrant_error = Arc::clone(&saw_reentrant_error_in_callback);
-                async move {
-                    let err = timer.stop().await.unwrap_err();
-                    saw_reentrant_error.store(err.is_reentrant_operation(), Ordering::SeqCst);
-                    timer.request_stop().await.unwrap();
-                    Ok(())
-                }
-            },
-            None,
-        )
+        .start_recurring(RecurringSchedule::new(Duration::from_secs(1)), move || {
+            let timer = timer_for_callback.clone();
+            let saw_reentrant_error = Arc::clone(&saw_reentrant_error_in_callback);
+            async move {
+                let err = timer.stop().await.unwrap_err();
+                saw_reentrant_error.store(err.is_reentrant_operation(), Ordering::SeqCst);
+                timer.request_stop().await.unwrap();
+                Ok(())
+            }
+        })
         .await
         .unwrap();
 
