@@ -9,8 +9,8 @@ use tokio::time::Instant;
 use log::error;
 
 use super::{
-    TimerCallback, TimerCommand, TimerEvent, TimerFinishReason, TimerInner, TimerOutcome,
-    TimerState,
+    RetryPolicy, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason, TimerInner,
+    TimerOutcome, TimerState,
 };
 
 tokio::task_local! {
@@ -62,6 +62,7 @@ pub(super) async fn run_timer<F>(
     interval: Duration,
     initial_delay: Option<Duration>,
     callback_timeout: Option<Duration>,
+    retry_policy: Option<RetryPolicy>,
     recurring: bool,
     expiration_count: Option<usize>,
     callback: F,
@@ -175,23 +176,37 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        let callback_result = match callback_timeout {
-            Some(timeout) => match time::timeout(timeout, callback.execute()).await {
-                Ok(result) => result,
-                Err(_) => Err(crate::errors::TimerError::callback_timed_out(timeout)),
-            },
-            None => callback.execute().await,
-        };
+        let max_attempts = retry_policy.map_or(1, |policy| policy.max_retries() + 1);
+        let mut callback_succeeded = false;
 
-        match callback_result {
-            Ok(()) => {
-                success_count += 1;
+        for _attempt in 0..max_attempts {
+            let callback_result = match callback_timeout {
+                Some(timeout) => match time::timeout(timeout, callback.execute()).await {
+                    Ok(result) => result,
+                    Err(_) => Err(crate::errors::TimerError::callback_timed_out(timeout)),
+                },
+                None => callback.execute().await,
+            };
+
+            match callback_result {
+                Ok(()) => {
+                    success_count += 1;
+                    callback_succeeded = true;
+                    break;
+                }
+                Err(err) => {
+                    #[cfg(feature = "logging")]
+                    error!("Callback execution error: {}", err);
+                    failure_count += 1;
+                    last_error = Some(err.clone());
+                }
             }
-            Err(err) => {
-                #[cfg(feature = "logging")]
-                error!("Callback execution error: {}", err);
-                failure_count += 1;
-                last_error = Some(err.clone());
+        }
+
+        if !callback_succeeded {
+            #[cfg(feature = "logging")]
+            if let Some(error) = &last_error {
+                error!("Callback execution exhausted retries: {}", error);
             }
         }
 

@@ -99,7 +99,7 @@ pub use registry::TimerRegistry;
 #[deprecated(note = "Use TimerRegistry instead.")]
 pub type TimerManager = TimerRegistry;
 pub use timer::{
-    Timer, TimerBuilder, TimerCallback, TimerCompletion, TimerEvent, TimerEvents,
+    RetryPolicy, Timer, TimerBuilder, TimerCallback, TimerCompletion, TimerEvent, TimerEvents,
     TimerFinishReason, TimerOutcome, TimerState, TimerStatistics,
 };
 

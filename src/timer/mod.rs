@@ -64,6 +64,24 @@ pub struct TimerOutcome {
     pub statistics: TimerStatistics,
 }
 
+/// Configures retry behavior for failed callback executions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    max_retries: usize,
+}
+
+impl RetryPolicy {
+    /// Creates a retry policy with the provided retry limit.
+    pub fn new(max_retries: usize) -> Self {
+        Self { max_retries }
+    }
+
+    /// Returns the maximum number of retry attempts after the first failure.
+    pub fn max_retries(self) -> usize {
+        self.max_retries
+    }
+}
+
 /// Event stream item produced by a timer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimerEvent {
@@ -243,6 +261,7 @@ pub struct TimerBuilder {
     kind: TimerKind,
     expiration_count: Option<usize>,
     callback_timeout: Option<Duration>,
+    retry_policy: Option<RetryPolicy>,
     start_paused: bool,
     events_enabled: bool,
 }
@@ -322,7 +341,7 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        self.start_internal(delay, None, None, callback, false, None, false)
+        self.start_internal(delay, None, None, None, callback, false, None, false)
             .await
     }
 
@@ -382,6 +401,7 @@ impl Timer {
         self.start_internal(
             interval,
             initial_delay,
+            None,
             None,
             callback,
             true,
@@ -589,6 +609,7 @@ impl Timer {
         interval: Duration,
         initial_delay: Option<Duration>,
         callback_timeout: Option<Duration>,
+        retry_policy: Option<RetryPolicy>,
         callback: F,
         recurring: bool,
         expiration_count: Option<usize>,
@@ -665,6 +686,7 @@ impl Timer {
                     interval,
                     initial_delay,
                     callback_timeout,
+                    retry_policy,
                     recurring,
                     expiration_count,
                     callback,
@@ -760,6 +782,7 @@ impl TimerBuilder {
             kind: TimerKind::Once(delay),
             expiration_count: None,
             callback_timeout: None,
+            retry_policy: None,
             start_paused: false,
             events_enabled: true,
         }
@@ -774,6 +797,7 @@ impl TimerBuilder {
             },
             expiration_count: None,
             callback_timeout: None,
+            retry_policy: None,
             start_paused: false,
             events_enabled: true,
         }
@@ -801,6 +825,18 @@ impl TimerBuilder {
     /// Sets a timeout for each callback execution.
     pub fn callback_timeout(mut self, callback_timeout: Duration) -> Self {
         self.callback_timeout = Some(callback_timeout);
+        self
+    }
+
+    /// Retries failed callback executions according to the provided policy.
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(retry_policy);
+        self
+    }
+
+    /// Retries failed callback executions up to `max_retries` times.
+    pub fn max_retries(mut self, max_retries: usize) -> Self {
+        self.retry_policy = Some(RetryPolicy::new(max_retries));
         self
     }
 
@@ -833,6 +869,7 @@ impl TimerBuilder {
                         delay,
                         None,
                         self.callback_timeout,
+                        self.retry_policy,
                         callback,
                         false,
                         None,
@@ -849,6 +886,7 @@ impl TimerBuilder {
                         interval,
                         initial_delay,
                         self.callback_timeout,
+                        self.retry_policy,
                         callback,
                         true,
                         self.expiration_count,

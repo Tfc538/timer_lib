@@ -365,6 +365,36 @@ async fn callback_timeout_counts_as_a_failed_execution() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn retry_policy_retries_failed_callbacks_before_succeeding() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_callback = Arc::clone(&attempts);
+    let timer = Timer::once(Duration::from_secs(1))
+        .max_retries(2)
+        .start(move || {
+            let attempts = Arc::clone(&attempts_for_callback);
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Err(TimerError::callback_failed("try again"))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+
+    let outcome = timer.join().await.unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(outcome.statistics.execution_count, 1);
+    assert_eq!(outcome.statistics.failed_executions, 2);
+    assert_eq!(outcome.statistics.successful_executions, 1);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn event_suppression_can_be_enabled_from_the_builder() {
     let timer = Timer::once(Duration::from_secs(1))
         .with_events_disabled()

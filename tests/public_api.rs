@@ -129,6 +129,35 @@ async fn callback_timeout_is_available_from_the_public_api() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn retry_policy_is_available_from_the_public_api() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempts_for_callback = std::sync::Arc::clone(&attempts);
+    let timer = Timer::once(Duration::from_secs(1))
+        .max_retries(1)
+        .start(move || {
+            let attempts = std::sync::Arc::clone(&attempts_for_callback);
+            async move {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(timer_lib::TimerError::callback_failed("retry"))
+                } else {
+                    Ok::<(), timer_lib::TimerError>(())
+                }
+            }
+        })
+        .await
+        .unwrap();
+    settle().await;
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+
+    let outcome = timer.join().await.unwrap();
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(outcome.statistics.failed_executions, 1);
+    assert_eq!(outcome.statistics.successful_executions, 1);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn completion_api_is_simple_to_consume() {
     let timer = Timer::new();
     let mut completion = timer.completion();
