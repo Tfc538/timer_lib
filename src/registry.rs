@@ -6,15 +6,39 @@ use std::sync::{
 use std::time::Duration;
 
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 use crate::errors::TimerError;
-use crate::timer::{RecurringSchedule, Timer, TimerCallback, TimerOutcome, TimerState};
+use crate::timer::driver::RuntimeHandle;
+use crate::timer::{
+    RecurringSchedule, Timer, TimerCallback, TimerMetadata, TimerOutcome, TimerSnapshot, TimerState,
+};
+
+/// Snapshot of a timer tracked by the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredTimer {
+    /// Registry identifier for the timer.
+    pub id: u64,
+    /// Current or most recent timer state.
+    pub state: TimerState,
+    /// Effective timer interval.
+    pub interval: Duration,
+    /// Optional recurring execution limit.
+    pub expiration_count: Option<usize>,
+    /// Run statistics captured from the timer.
+    pub statistics: crate::timer::TimerStatistics,
+    /// Most recent completed outcome, if any.
+    pub last_outcome: Option<TimerOutcome>,
+    /// Metadata associated with the timer.
+    pub metadata: TimerMetadata,
+}
 
 /// A registry for tracking timers by identifier.
 #[derive(Clone, Default)]
 pub struct TimerRegistry {
     timers: Arc<RwLock<HashMap<u64, Timer>>>,
     next_id: Arc<AtomicU64>,
+    runtime: RuntimeHandle,
 }
 
 impl TimerRegistry {
@@ -23,7 +47,22 @@ impl TimerRegistry {
         Self {
             timers: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(0)),
+            runtime: RuntimeHandle::default(),
         }
+    }
+
+    /// Creates a new registry backed by a manually-driven test runtime.
+    #[cfg(feature = "test-util")]
+    pub fn new_mocked() -> (Self, crate::timer::MockRuntime) {
+        let runtime = crate::timer::MockRuntime::new();
+        (
+            Self {
+                timers: Arc::new(RwLock::new(HashMap::new())),
+                next_id: Arc::new(AtomicU64::new(0)),
+                runtime: runtime.handle(),
+            },
+            runtime,
+        )
     }
 
     /// Inserts an existing timer and returns its identifier.
@@ -42,8 +81,23 @@ impl TimerRegistry {
     where
         F: TimerCallback + 'static,
     {
-        let timer = Timer::new();
+        let timer = Timer::new_with_runtime(self.runtime.clone(), true);
         let _ = timer.start_once(delay, callback).await?;
+        let id = self.insert(timer.clone()).await;
+        Ok((id, timer))
+    }
+
+    /// Starts and registers a one-time timer at a deadline.
+    pub async fn start_at<F>(
+        &self,
+        deadline: Instant,
+        callback: F,
+    ) -> Result<(u64, Timer), TimerError>
+    where
+        F: TimerCallback + 'static,
+    {
+        let timer = Timer::new_with_runtime(self.runtime.clone(), true);
+        let _ = timer.start_at(deadline, callback).await?;
         let id = self.insert(timer.clone()).await;
         Ok((id, timer))
     }
@@ -57,7 +111,7 @@ impl TimerRegistry {
     where
         F: TimerCallback + 'static,
     {
-        let timer = Timer::new();
+        let timer = Timer::new_with_runtime(self.runtime.clone(), true);
         let _ = timer.start_recurring(schedule, callback).await?;
         let id = self.insert(timer.clone()).await;
         Ok((id, timer))
@@ -191,6 +245,39 @@ impl TimerRegistry {
         self.timers.read().await.get(&id).cloned()
     }
 
+    /// Returns a snapshot of a tracked timer by identifier.
+    pub async fn snapshot(&self, id: u64) -> Option<RegisteredTimer> {
+        let timer = self.get(id).await?;
+        Some(RegisteredTimer::from_snapshot(id, timer.snapshot().await))
+    }
+
+    /// Lists snapshots for all tracked timers.
+    pub async fn list(&self) -> Vec<RegisteredTimer> {
+        let timers: Vec<(u64, Timer)> = self
+            .timers
+            .read()
+            .await
+            .iter()
+            .map(|(id, timer)| (*id, timer.clone()))
+            .collect();
+
+        let mut listed = Vec::with_capacity(timers.len());
+        for (id, timer) in timers {
+            listed.push(RegisteredTimer::from_snapshot(id, timer.snapshot().await));
+        }
+        listed
+    }
+
+    /// Returns the identifiers for timers carrying a matching label.
+    pub async fn find_by_label(&self, label: &str) -> Vec<u64> {
+        let snapshots = self.list().await;
+        snapshots
+            .into_iter()
+            .filter(|timer| timer.metadata.label.as_deref() == Some(label))
+            .map(|timer| timer.id)
+            .collect()
+    }
+
     /// Returns the number of tracked timers.
     pub async fn len(&self) -> usize {
         self.timers.read().await.len()
@@ -207,6 +294,20 @@ impl TimerRegistry {
         let removed = timers.len();
         timers.clear();
         removed
+    }
+}
+
+impl RegisteredTimer {
+    fn from_snapshot(id: u64, snapshot: TimerSnapshot) -> Self {
+        Self {
+            id,
+            state: snapshot.state,
+            interval: snapshot.interval,
+            expiration_count: snapshot.expiration_count,
+            statistics: snapshot.statistics,
+            last_outcome: snapshot.last_outcome,
+            metadata: snapshot.metadata,
+        }
     }
 }
 

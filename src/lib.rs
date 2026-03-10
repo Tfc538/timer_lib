@@ -97,10 +97,13 @@ pub use errors::TimerError;
 pub use registry::TimerRegistry;
 #[deprecated(note = "Use TimerRegistry instead.")]
 pub type TimerManager = TimerRegistry;
+pub use registry::RegisteredTimer;
+#[cfg(feature = "test-util")]
+pub use timer::MockRuntime;
 pub use timer::{
-    RecurringCadence, RecurringSchedule, RetryPolicy, Timer, TimerBuilder, TimerCallback,
-    TimerCompletion, TimerEvent, TimerEvents, TimerFinishReason, TimerOutcome, TimerState,
-    TimerStatistics,
+    RecurringCadence, RecurringSchedule, RetryBackoff, RetryPolicy, Timer, TimerBuilder,
+    TimerCallback, TimerCompletion, TimerEvent, TimerEvents, TimerFinishReason, TimerMetadata,
+    TimerOutcome, TimerSnapshot, TimerState, TimerStatistics,
 };
 
 // Rust guideline compliant 2026-02-21

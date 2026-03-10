@@ -169,6 +169,7 @@ async fn events_are_emitted_for_key_lifecycle_changes() {
             interval: Duration::from_secs(1),
             recurring: true,
             expiration_count: Some(1),
+            metadata: TimerMetadata::default(),
         })
     );
 

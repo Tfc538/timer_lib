@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -7,19 +8,30 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 #[cfg(feature = "logging")]
 use log::debug;
 
 use crate::errors::TimerError;
 
-mod driver;
+pub(crate) mod driver;
 mod runtime;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "test-util")]
+pub use driver::MockRuntime;
+
 const TIMER_EVENT_BUFFER: usize = 64;
+
+fn saturating_mul_duration(duration: Duration, multiplier: u32) -> Duration {
+    let nanos = duration.as_nanos();
+    let scaled = nanos.saturating_mul(multiplier as u128);
+    let capped = scaled.min(u64::MAX as u128) as u64;
+    Duration::from_nanos(capped)
+}
 
 /// Represents the state of a timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +76,32 @@ pub struct TimerOutcome {
     pub statistics: TimerStatistics,
 }
 
+/// Metadata attached to a timer for observability.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TimerMetadata {
+    /// Optional human-readable label for the timer.
+    pub label: Option<String>,
+    /// Arbitrary key-value metadata associated with the timer.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// Snapshot of the current or most recent timer state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerSnapshot {
+    /// The timer state observed for the snapshot.
+    pub state: TimerState,
+    /// The effective interval configured for the timer.
+    pub interval: Duration,
+    /// The optional recurring execution limit.
+    pub expiration_count: Option<usize>,
+    /// Statistics for the current or most recent run.
+    pub statistics: TimerStatistics,
+    /// The most recent completed outcome, if any.
+    pub last_outcome: Option<TimerOutcome>,
+    /// Metadata associated with the timer.
+    pub metadata: TimerMetadata,
+}
+
 /// Defines how recurring timers schedule the next execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecurringCadence {
@@ -78,6 +116,7 @@ pub struct RecurringSchedule {
     initial_delay: Option<Duration>,
     cadence: RecurringCadence,
     expiration_count: Option<usize>,
+    jitter: Option<Duration>,
 }
 
 impl RecurringSchedule {
@@ -88,6 +127,7 @@ impl RecurringSchedule {
             initial_delay: None,
             cadence: RecurringCadence::FixedDelay,
             expiration_count: None,
+            jitter: None,
         }
     }
 
@@ -109,6 +149,11 @@ impl RecurringSchedule {
     /// Returns the optional execution limit.
     pub fn expiration_count(self) -> Option<usize> {
         self.expiration_count
+    }
+
+    /// Returns the optional jitter applied to recurring sleeps.
+    pub fn jitter(self) -> Option<Duration> {
+        self.jitter
     }
 
     /// Sets an initial delay before the first recurring execution.
@@ -140,23 +185,72 @@ impl RecurringSchedule {
         self.expiration_count = Some(expiration_count);
         self
     }
+
+    /// Adds bounded jitter to recurring delays.
+    pub fn with_jitter(mut self, jitter: Duration) -> Self {
+        self.jitter = Some(jitter);
+        self
+    }
 }
 
 /// Configures retry behavior for failed callback executions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     max_retries: usize,
+    backoff: RetryBackoff,
 }
 
 impl RetryPolicy {
     /// Creates a retry policy with the provided retry limit.
     pub fn new(max_retries: usize) -> Self {
-        Self { max_retries }
+        Self {
+            max_retries,
+            backoff: RetryBackoff::Immediate,
+        }
     }
 
     /// Returns the maximum number of retry attempts after the first failure.
     pub fn max_retries(self) -> usize {
         self.max_retries
+    }
+
+    /// Returns the configured retry backoff strategy.
+    pub fn backoff(self) -> RetryBackoff {
+        self.backoff
+    }
+
+    /// Sets the backoff strategy used between retry attempts.
+    pub fn with_backoff(mut self, backoff: RetryBackoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
+    fn delay_for_retry(self, retry_number: usize) -> Duration {
+        self.backoff.delay_for_retry(retry_number)
+    }
+}
+
+/// Defines how retries should back off after callback failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryBackoff {
+    Immediate,
+    Fixed(Duration),
+    Linear(Duration),
+    Exponential(Duration),
+}
+
+impl RetryBackoff {
+    fn delay_for_retry(self, retry_number: usize) -> Duration {
+        match self {
+            Self::Immediate => Duration::ZERO,
+            Self::Fixed(delay) => delay,
+            Self::Linear(step) => saturating_mul_duration(step, retry_number as u32),
+            Self::Exponential(base) => {
+                let exponent = retry_number.saturating_sub(1) as u32;
+                let multiplier = 1_u32.checked_shl(exponent.min(31)).unwrap_or(u32::MAX);
+                saturating_mul_duration(base, multiplier)
+            }
+        }
     }
 }
 
@@ -168,6 +262,7 @@ pub enum TimerEvent {
         interval: Duration,
         recurring: bool,
         expiration_count: Option<usize>,
+        metadata: TimerMetadata,
     },
     Paused {
         run_id: u64,
@@ -353,6 +448,7 @@ pub(super) struct TimerInner {
     pub(super) command_tx: Mutex<Option<mpsc::UnboundedSender<TimerCommand>>>,
     pub(super) interval: Mutex<Duration>,
     pub(super) expiration_count: Mutex<Option<usize>>,
+    pub(super) metadata: Mutex<TimerMetadata>,
     pub(super) statistics: Mutex<TimerStatistics>,
     pub(super) last_outcome: Mutex<Option<TimerOutcome>>,
     pub(super) completion_tx: watch::Sender<Option<TimerOutcome>>,
@@ -363,20 +459,24 @@ pub(super) struct TimerInner {
     pub(super) active_run_id: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct RunConfig {
     pub(super) interval: Duration,
+    pub(super) start_deadline: Option<Instant>,
     pub(super) initial_delay: Option<Duration>,
+    pub(super) jitter: Option<Duration>,
     pub(super) callback_timeout: Option<Duration>,
     pub(super) retry_policy: Option<RetryPolicy>,
     pub(super) recurring: bool,
     pub(super) cadence: RecurringCadence,
     pub(super) expiration_count: Option<usize>,
+    pub(super) metadata: TimerMetadata,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum TimerKind {
     Once(Duration),
+    At(Instant),
     Recurring(RecurringSchedule),
 }
 
@@ -387,6 +487,7 @@ pub struct TimerBuilder {
     retry_policy: Option<RetryPolicy>,
     start_paused: bool,
     events_enabled: bool,
+    metadata: TimerMetadata,
 }
 
 #[derive(Clone)]
@@ -404,15 +505,15 @@ impl Default for Timer {
 impl Timer {
     /// Creates a new timer.
     pub fn new() -> Self {
-        Self::new_with_events(true)
+        Self::new_with_runtime(driver::RuntimeHandle::default(), true)
     }
 
     /// Creates a new timer with broadcast events disabled.
     pub fn new_silent() -> Self {
-        Self::new_with_events(false)
+        Self::new_with_runtime(driver::RuntimeHandle::default(), false)
     }
 
-    fn new_with_events(events_enabled: bool) -> Self {
+    pub(crate) fn new_with_runtime(runtime: driver::RuntimeHandle, events_enabled: bool) -> Self {
         let (completion_tx, _completion_rx) = watch::channel(None);
         let (event_tx, _event_rx) = broadcast::channel(TIMER_EVENT_BUFFER);
 
@@ -423,12 +524,13 @@ impl Timer {
                 command_tx: Mutex::new(None),
                 interval: Mutex::new(Duration::ZERO),
                 expiration_count: Mutex::new(None),
+                metadata: Mutex::new(TimerMetadata::default()),
                 statistics: Mutex::new(TimerStatistics::default()),
                 last_outcome: Mutex::new(None),
                 completion_tx,
                 event_tx,
                 events_enabled: AtomicBool::new(events_enabled),
-                runtime: driver::RuntimeHandle,
+                runtime,
                 next_run_id: AtomicU64::new(1),
                 active_run_id: AtomicU64::new(0),
             }),
@@ -438,6 +540,11 @@ impl Timer {
     /// Creates a timer builder configured for a one-time run.
     pub fn once(delay: Duration) -> TimerBuilder {
         TimerBuilder::once(delay)
+    }
+
+    /// Creates a timer builder configured for a one-time run at a deadline.
+    pub fn at(deadline: Instant) -> TimerBuilder {
+        TimerBuilder::at(deadline)
     }
 
     /// Creates a timer builder configured for a recurring schedule.
@@ -459,20 +566,31 @@ impl Timer {
         }
     }
 
+    /// Creates a new timer backed by a manually-driven test runtime.
+    #[cfg(feature = "test-util")]
+    pub fn new_mocked() -> (Self, MockRuntime) {
+        let runtime = MockRuntime::new();
+        (Self::new_with_runtime(runtime.handle(), true), runtime)
+    }
+
     /// Starts a one-time timer.
     pub async fn start_once<F>(&self, delay: Duration, callback: F) -> Result<u64, TimerError>
     where
         F: TimerCallback + 'static,
     {
+        let metadata = self.inner.metadata.lock().await.clone();
         self.start_internal(
             RunConfig {
                 interval: delay,
+                start_deadline: None,
                 initial_delay: None,
+                jitter: None,
                 callback_timeout: None,
                 retry_policy: None,
                 recurring: false,
                 cadence: RecurringCadence::FixedDelay,
                 expiration_count: None,
+                metadata,
             },
             callback,
             false,
@@ -493,6 +611,45 @@ impl Timer {
         self.start_once(delay, callback).await
     }
 
+    /// Starts a one-time timer that fires at the provided deadline.
+    pub async fn start_at<F>(&self, deadline: Instant, callback: F) -> Result<u64, TimerError>
+    where
+        F: TimerCallback + 'static,
+    {
+        let now = self.inner.runtime.now();
+        let metadata = self.inner.metadata.lock().await.clone();
+        self.start_internal(
+            RunConfig {
+                interval: deadline.saturating_duration_since(now),
+                start_deadline: Some(deadline),
+                initial_delay: None,
+                jitter: None,
+                callback_timeout: None,
+                retry_policy: None,
+                recurring: false,
+                cadence: RecurringCadence::FixedDelay,
+                expiration_count: None,
+                metadata,
+            },
+            callback,
+            false,
+        )
+        .await
+    }
+
+    /// Starts a one-time timer from an async closure at the provided deadline.
+    pub async fn start_at_fn<F, Fut>(
+        &self,
+        deadline: Instant,
+        callback: F,
+    ) -> Result<u64, TimerError>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), TimerError>> + Send + 'static,
+    {
+        self.start_at(deadline, callback).await
+    }
+
     /// Starts a recurring timer with the provided schedule.
     pub async fn start_recurring<F>(
         &self,
@@ -502,15 +659,19 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
+        let metadata = self.inner.metadata.lock().await.clone();
         self.start_internal(
             RunConfig {
                 interval: schedule.interval,
+                start_deadline: None,
                 initial_delay: schedule.initial_delay,
+                jitter: schedule.jitter,
                 callback_timeout: None,
                 retry_policy: None,
                 recurring: true,
                 cadence: schedule.cadence,
                 expiration_count: schedule.expiration_count,
+                metadata,
             },
             callback,
             false,
@@ -714,6 +875,43 @@ impl Timer {
         self.inner.statistics.lock().await.last_error.clone()
     }
 
+    /// Returns the metadata currently associated with the timer.
+    pub async fn metadata(&self) -> TimerMetadata {
+        self.inner.metadata.lock().await.clone()
+    }
+
+    /// Returns the current label, if one has been assigned.
+    pub async fn label(&self) -> Option<String> {
+        self.inner.metadata.lock().await.label.clone()
+    }
+
+    /// Sets the timer label used for diagnostics and registry introspection.
+    pub async fn set_label(&self, label: impl Into<String>) {
+        self.inner.metadata.lock().await.label = Some(label.into());
+    }
+
+    /// Sets or replaces a metadata tag on the timer.
+    pub async fn set_tag(&self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner
+            .metadata
+            .lock()
+            .await
+            .tags
+            .insert(key.into(), value.into());
+    }
+
+    /// Captures a snapshot of the timer's current observable state.
+    pub async fn snapshot(&self) -> TimerSnapshot {
+        TimerSnapshot {
+            state: self.get_state().await,
+            interval: self.get_interval().await,
+            expiration_count: self.get_expiration_count().await,
+            statistics: self.get_statistics().await,
+            last_outcome: self.last_outcome().await,
+            metadata: self.metadata().await,
+        }
+    }
+
     /// Gets the most recent completed run outcome.
     pub async fn last_outcome(&self) -> Option<TimerOutcome> {
         self.inner.last_outcome.lock().await.clone()
@@ -733,7 +931,7 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        if config.interval.is_zero() {
+        if config.interval.is_zero() && config.start_deadline.is_none() {
             return Err(TimerError::invalid_parameter(
                 "Interval must be greater than zero.",
             ));
@@ -751,12 +949,31 @@ impl Timer {
             ));
         }
 
+        if config.jitter.is_some_and(|jitter| jitter.is_zero()) {
+            return Err(TimerError::invalid_parameter(
+                "Jitter must be greater than zero.",
+            ));
+        }
+
         if config
             .callback_timeout
             .is_some_and(|timeout| timeout.is_zero())
         {
             return Err(TimerError::invalid_parameter(
                 "Callback timeout must be greater than zero.",
+            ));
+        }
+
+        if config.retry_policy.is_some_and(|policy| {
+            matches!(
+                policy.backoff(),
+                RetryBackoff::Fixed(duration)
+                    | RetryBackoff::Linear(duration)
+                    | RetryBackoff::Exponential(duration) if duration.is_zero()
+            )
+        }) {
+            return Err(TimerError::invalid_parameter(
+                "Retry backoff must be greater than zero.",
             ));
         }
 
@@ -778,6 +995,7 @@ impl Timer {
             *self.inner.command_tx.lock().await = Some(tx);
             *self.inner.interval.lock().await = config.interval;
             *self.inner.expiration_count.lock().await = config.expiration_count;
+            *self.inner.metadata.lock().await = config.metadata.clone();
             *self.inner.statistics.lock().await = TimerStatistics::default();
             *self.inner.last_outcome.lock().await = None;
             self.inner.completion_tx.send_replace(None);
@@ -791,6 +1009,7 @@ impl Timer {
                 interval: config.interval,
                 recurring: config.recurring,
                 expiration_count: config.expiration_count,
+                metadata: config.metadata.clone(),
             },
         );
 
@@ -890,6 +1109,19 @@ impl TimerBuilder {
             retry_policy: None,
             start_paused: false,
             events_enabled: true,
+            metadata: TimerMetadata::default(),
+        }
+    }
+
+    /// Creates a builder for a one-time timer at a deadline.
+    pub fn at(deadline: Instant) -> Self {
+        Self {
+            kind: TimerKind::At(deadline),
+            callback_timeout: None,
+            retry_policy: None,
+            start_paused: false,
+            events_enabled: true,
+            metadata: TimerMetadata::default(),
         }
     }
 
@@ -901,6 +1133,7 @@ impl TimerBuilder {
             retry_policy: None,
             start_paused: false,
             events_enabled: true,
+            metadata: TimerMetadata::default(),
         }
     }
 
@@ -922,6 +1155,36 @@ impl TimerBuilder {
         self
     }
 
+    /// Applies a fixed delay between retry attempts.
+    pub fn fixed_backoff(mut self, delay: Duration) -> Self {
+        self.retry_policy = Some(
+            self.retry_policy
+                .unwrap_or_else(|| RetryPolicy::new(0))
+                .with_backoff(RetryBackoff::Fixed(delay)),
+        );
+        self
+    }
+
+    /// Applies a linearly increasing delay between retry attempts.
+    pub fn linear_backoff(mut self, step: Duration) -> Self {
+        self.retry_policy = Some(
+            self.retry_policy
+                .unwrap_or_else(|| RetryPolicy::new(0))
+                .with_backoff(RetryBackoff::Linear(step)),
+        );
+        self
+    }
+
+    /// Applies an exponentially increasing delay between retry attempts.
+    pub fn exponential_backoff(mut self, base: Duration) -> Self {
+        self.retry_policy = Some(
+            self.retry_policy
+                .unwrap_or_else(|| RetryPolicy::new(0))
+                .with_backoff(RetryBackoff::Exponential(base)),
+        );
+        self
+    }
+
     /// Starts the timer in the paused state.
     pub fn paused_start(mut self) -> Self {
         self.start_paused = true;
@@ -934,31 +1197,76 @@ impl TimerBuilder {
         self
     }
 
+    /// Sets a label for the started timer.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.metadata.label = Some(label.into());
+        self
+    }
+
+    /// Adds a metadata tag for the started timer.
+    pub fn tag(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.tags.insert(key.into(), value.into());
+        self
+    }
+
     /// Starts the configured timer and returns the handle.
     pub async fn start<F>(self, callback: F) -> Result<Timer, TimerError>
     where
         F: TimerCallback + 'static,
     {
-        let timer = Timer::new_with_events(self.events_enabled);
-        if self.start_paused {
+        let Self {
+            kind,
+            callback_timeout,
+            retry_policy,
+            start_paused,
+            events_enabled,
+            metadata,
+        } = self;
+
+        let timer = Timer::new_with_runtime(driver::RuntimeHandle::default(), events_enabled);
+        if start_paused {
             *timer.inner.state.lock().await = TimerState::Paused;
         }
 
-        match self.kind {
+        match kind {
             TimerKind::Once(delay) => {
                 let _ = timer
                     .start_internal(
                         RunConfig {
                             interval: delay,
+                            start_deadline: None,
                             initial_delay: None,
-                            callback_timeout: self.callback_timeout,
-                            retry_policy: self.retry_policy,
+                            jitter: None,
+                            callback_timeout,
+                            retry_policy,
                             recurring: false,
                             cadence: RecurringCadence::FixedDelay,
                             expiration_count: None,
+                            metadata: metadata.clone(),
                         },
                         callback,
-                        self.start_paused,
+                        start_paused,
+                    )
+                    .await?;
+            }
+            TimerKind::At(deadline) => {
+                let now = timer.inner.runtime.now();
+                let _ = timer
+                    .start_internal(
+                        RunConfig {
+                            interval: deadline.saturating_duration_since(now),
+                            start_deadline: Some(deadline),
+                            initial_delay: None,
+                            jitter: None,
+                            callback_timeout,
+                            retry_policy,
+                            recurring: false,
+                            cadence: RecurringCadence::FixedDelay,
+                            expiration_count: None,
+                            metadata: metadata.clone(),
+                        },
+                        callback,
+                        start_paused,
                     )
                     .await?;
             }
@@ -967,15 +1275,18 @@ impl TimerBuilder {
                     .start_internal(
                         RunConfig {
                             interval: schedule.interval,
+                            start_deadline: None,
                             initial_delay: schedule.initial_delay,
-                            callback_timeout: self.callback_timeout,
-                            retry_policy: self.retry_policy,
+                            jitter: schedule.jitter,
+                            callback_timeout,
+                            retry_policy,
                             recurring: true,
                             cadence: schedule.cadence,
                             expiration_count: schedule.expiration_count,
+                            metadata,
                         },
                         callback,
-                        self.start_paused,
+                        start_paused,
                     )
                     .await?;
             }

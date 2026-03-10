@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use timer_lib::{RecurringSchedule, Timer, TimerEvent, TimerFinishReason, TimerRegistry};
 use tokio::task::yield_now;
-use tokio::time::advance;
+use tokio::time::{advance, Instant};
 
 async fn settle() {
     for _ in 0..5 {
@@ -281,6 +281,101 @@ async fn recurring_schedule_is_the_public_configuration_entry_point() {
     advance(Duration::from_secs(1)).await;
     settle().await;
 
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn start_at_is_available_from_the_public_api() {
+    let timer = Timer::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    timer.start_at(deadline, || async { Ok(()) }).await.unwrap();
+
+    advance(Duration::from_secs(4)).await;
+    settle().await;
+    assert_eq!(timer.get_statistics().await.execution_count, 0);
+
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn labels_and_registry_snapshots_are_available_from_the_public_api() {
+    let timer = Timer::once(Duration::from_secs(1))
+        .label("billing")
+        .tag("tenant", "acme")
+        .start(|| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let snapshot = timer.snapshot().await;
+    assert_eq!(snapshot.metadata.label.as_deref(), Some("billing"));
+    assert_eq!(
+        snapshot.metadata.tags.get("tenant").map(String::as_str),
+        Some("acme")
+    );
+
+    let registry = TimerRegistry::new();
+    let timer_id = registry.insert(timer.clone()).await;
+    let listed = registry.list().await;
+    assert!(listed.iter().any(|entry| {
+        entry.id == timer_id && entry.metadata.label.as_deref() == Some("billing")
+    }));
+    assert_eq!(registry.find_by_label("billing").await, vec![timer_id]);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn jitter_and_retry_backoff_are_available_from_the_public_api() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempts_for_callback = std::sync::Arc::clone(&attempts);
+    let timer = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(2))
+            .with_jitter(Duration::from_secs(1))
+            .with_expiration_count(1),
+    )
+    .max_retries(1)
+    .fixed_backoff(Duration::from_secs(3))
+    .start(move || {
+        let attempts = std::sync::Arc::clone(&attempts_for_callback);
+        async move {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(timer_lib::TimerError::callback_failed("boom"))
+            } else {
+                Ok::<(), timer_lib::TimerError>(())
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    advance(Duration::from_secs(6)).await;
+    settle().await;
+
+    let outcome = timer.join().await.unwrap();
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(outcome.reason, TimerFinishReason::Completed);
+    assert_eq!(outcome.statistics.failed_executions, 1);
+    assert_eq!(outcome.statistics.successful_executions, 1);
+}
+
+#[cfg(feature = "test-util")]
+#[tokio::test(flavor = "current_thread")]
+async fn mock_runtime_is_available_from_the_public_api() {
+    let (timer, runtime) = Timer::new_mocked();
+    let deadline = runtime.now() + Duration::from_secs(3);
+    timer.start_at(deadline, || async { Ok(()) }).await.unwrap();
+
+    runtime.advance(Duration::from_secs(2)).await;
+    assert_eq!(timer.get_statistics().await.execution_count, 0);
+
+    runtime.advance(Duration::from_secs(1)).await;
     assert_eq!(
         timer.join().await.unwrap().reason,
         TimerFinishReason::Completed

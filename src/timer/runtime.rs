@@ -9,8 +9,8 @@ use tokio::time::Instant;
 use log::error;
 
 use super::{
-    RecurringCadence, RunConfig, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason,
-    TimerInner, TimerOutcome, TimerState,
+    RecurringCadence, RetryPolicy, RunConfig, TimerCallback, TimerCommand, TimerEvent,
+    TimerFinishReason, TimerInner, TimerOutcome, TimerState,
 };
 
 tokio::task_local! {
@@ -66,7 +66,7 @@ pub(super) async fn run_timer<F>(
     F: TimerCallback + 'static,
 {
     let started_at = inner.runtime.now();
-    let first_delay = config.initial_delay.unwrap_or(config.interval);
+    let first_delay = first_sleep_delay(&inner, &config);
     let mut tick_count = 0usize;
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
@@ -97,7 +97,15 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        let sleep = inner.runtime.sleep(next_sleep);
+        let sleep = if !config.recurring {
+            if let Some(deadline) = config.start_deadline {
+                inner.runtime.sleep_until(deadline)
+            } else {
+                inner.runtime.sleep(next_sleep)
+            }
+        } else {
+            inner.runtime.sleep(next_sleep)
+        };
         tokio::pin!(sleep);
 
         loop {
@@ -115,7 +123,7 @@ pub(super) async fn run_timer<F>(
                                     &mut next_deadline,
                                     current_interval,
                                 );
-                                sleep.as_mut().reset(Instant::now() + current_interval);
+                                sleep.set(inner.runtime.sleep(current_interval));
                             }
                             RunControl::Finish(reason) => {
                                 let outcome = snapshot_outcome(
@@ -179,7 +187,7 @@ pub(super) async fn run_timer<F>(
                             &mut next_deadline,
                             current_interval,
                         );
-                        sleep.as_mut().reset(Instant::now() + current_interval);
+                        sleep.set(inner.runtime.sleep(current_interval));
                     }
                 }
             }
@@ -190,7 +198,7 @@ pub(super) async fn run_timer<F>(
             .map_or(1, |policy| policy.max_retries() + 1);
         let mut callback_succeeded = false;
 
-        for _attempt in 0..max_attempts {
+        for attempt in 0..max_attempts {
             let callback_result = match config.callback_timeout {
                 Some(timeout) => match time::timeout(timeout, callback.execute()).await {
                     Ok(result) => result,
@@ -210,6 +218,15 @@ pub(super) async fn run_timer<F>(
                     error!("Callback execution error: {}", err);
                     failure_count += 1;
                     last_error = Some(err.clone());
+
+                    if attempt + 1 < max_attempts {
+                        if let Some(backoff) = retry_backoff_delay(config.retry_policy, attempt + 1)
+                        {
+                            if !backoff.is_zero() {
+                                inner.runtime.sleep(backoff).await;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -288,7 +305,7 @@ fn next_sleep_duration(
     next_deadline: &mut Option<Instant>,
     current_interval: Duration,
 ) -> Duration {
-    match config.cadence {
+    let base = match config.cadence {
         RecurringCadence::FixedDelay => current_interval,
         RecurringCadence::FixedRate => {
             let now = inner.runtime.now();
@@ -296,7 +313,9 @@ fn next_sleep_duration(
             *deadline += current_interval;
             deadline.saturating_duration_since(now)
         }
-    }
+    };
+
+    apply_jitter(inner, base, config.jitter)
 }
 
 fn reset_recurring_deadline(
@@ -394,6 +413,30 @@ async fn update_statistics(
 
     *inner.statistics.lock().await = statistics.clone();
     statistics
+}
+
+fn first_sleep_delay(inner: &Arc<TimerInner>, config: &RunConfig) -> Duration {
+    let base = match config.start_deadline {
+        Some(deadline) => deadline.saturating_duration_since(inner.runtime.now()),
+        None => config.initial_delay.unwrap_or(config.interval),
+    };
+
+    if config.recurring {
+        apply_jitter(inner, base, config.jitter)
+    } else {
+        base
+    }
+}
+
+fn retry_backoff_delay(retry_policy: Option<RetryPolicy>, retry_number: usize) -> Option<Duration> {
+    retry_policy.map(|policy| policy.delay_for_retry(retry_number))
+}
+
+fn apply_jitter(inner: &Arc<TimerInner>, base: Duration, jitter: Option<Duration>) -> Duration {
+    match jitter {
+        Some(max_jitter) => base.saturating_add(inner.runtime.sample_jitter(max_jitter)),
+        None => base,
+    }
 }
 
 async fn snapshot_outcome(

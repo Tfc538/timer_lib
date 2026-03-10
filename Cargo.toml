@@ -14,14 +14,17 @@ categories = ["asynchronous"]
 
 [dependencies]
 async-trait = "0.1.83"
+fastrand = "2"
 log = { version = "0.4", optional = true }
-tokio = { version = "1", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [features]
 logging = ["log"]
+test-util = ["tokio/test-util"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
 
 [[bench]]
 name = "timer_bench"

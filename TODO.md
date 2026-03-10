@@ -21,3 +21,8 @@
 - [x] Reduce avoidable runtime/event overhead in the timer loop.
 - [x] Add stronger lifecycle invariant and bizarre reentrancy tests.
 - [x] Align docs and README with the new async-native API.
+- [x] Add deadline-based one-shot scheduling.
+- [x] Add recurring jitter and retry backoff controls.
+- [x] Add timer labels/metadata and registry snapshots.
+- [x] Add a feature-gated mock runtime test utility.
+- [x] Reduce the Tokio feature surface and keep CI/package checks green.
