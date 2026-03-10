@@ -9,7 +9,7 @@ use tokio::time::Instant;
 use log::error;
 
 use super::{
-    RetryPolicy, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason, TimerInner,
+    RunConfig, TimerCallback, TimerCommand, TimerEvent, TimerFinishReason, TimerInner,
     TimerOutcome, TimerState,
 };
 
@@ -59,12 +59,7 @@ pub(super) fn is_current_run(inner: &Arc<TimerInner>) -> bool {
 pub(super) async fn run_timer<F>(
     inner: Arc<TimerInner>,
     run_id: u64,
-    interval: Duration,
-    initial_delay: Option<Duration>,
-    callback_timeout: Option<Duration>,
-    retry_policy: Option<RetryPolicy>,
-    recurring: bool,
-    expiration_count: Option<usize>,
+    config: RunConfig,
     callback: F,
     mut rx: mpsc::UnboundedReceiver<TimerCommand>,
 ) where
@@ -74,8 +69,8 @@ pub(super) async fn run_timer<F>(
     let mut tick_count = 0usize;
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
-    let mut current_interval = interval;
-    let mut next_sleep = initial_delay.unwrap_or(interval);
+    let mut current_interval = config.interval;
+    let mut next_sleep = config.initial_delay.unwrap_or(config.interval);
     let mut last_error = None;
 
     loop {
@@ -176,11 +171,13 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        let max_attempts = retry_policy.map_or(1, |policy| policy.max_retries() + 1);
+        let max_attempts = config
+            .retry_policy
+            .map_or(1, |policy| policy.max_retries() + 1);
         let mut callback_succeeded = false;
 
         for _attempt in 0..max_attempts {
-            let callback_result = match callback_timeout {
+            let callback_result = match config.callback_timeout {
                 Some(timeout) => match time::timeout(timeout, callback.execute()).await {
                     Ok(result) => result,
                     Err(_) => Err(crate::errors::TimerError::callback_timed_out(timeout)),
@@ -255,7 +252,11 @@ pub(super) async fn run_timer<F>(
             }
         }
 
-        if !recurring || expiration_count.is_some_and(|max_ticks| tick_count >= max_ticks) {
+        if !config.recurring
+            || config
+                .expiration_count
+                .is_some_and(|max_ticks| tick_count >= max_ticks)
+        {
             let outcome = TimerOutcome {
                 run_id,
                 reason: TimerFinishReason::Completed,

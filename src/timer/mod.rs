@@ -286,6 +286,16 @@ pub(super) struct TimerInner {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct RunConfig {
+    pub(super) interval: Duration,
+    pub(super) initial_delay: Option<Duration>,
+    pub(super) callback_timeout: Option<Duration>,
+    pub(super) retry_policy: Option<RetryPolicy>,
+    pub(super) recurring: bool,
+    pub(super) expiration_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum TimerKind {
     Once(Duration),
     Recurring {
@@ -379,8 +389,19 @@ impl Timer {
     where
         F: TimerCallback + 'static,
     {
-        self.start_internal(delay, None, None, None, callback, false, None, false)
-            .await
+        self.start_internal(
+            RunConfig {
+                interval: delay,
+                initial_delay: None,
+                callback_timeout: None,
+                retry_policy: None,
+                recurring: false,
+                expiration_count: None,
+            },
+            callback,
+            false,
+        )
+        .await
     }
 
     /// Starts a one-time timer from an async closure.
@@ -437,13 +458,15 @@ impl Timer {
         F: TimerCallback + 'static,
     {
         self.start_internal(
-            interval,
-            initial_delay,
-            None,
-            None,
+            RunConfig {
+                interval,
+                initial_delay,
+                callback_timeout: None,
+                retry_policy: None,
+                recurring: true,
+                expiration_count,
+            },
             callback,
-            true,
-            expiration_count,
             false,
         )
         .await
@@ -644,37 +667,35 @@ impl Timer {
 
     async fn start_internal<F>(
         &self,
-        interval: Duration,
-        initial_delay: Option<Duration>,
-        callback_timeout: Option<Duration>,
-        retry_policy: Option<RetryPolicy>,
+        config: RunConfig,
         callback: F,
-        recurring: bool,
-        expiration_count: Option<usize>,
         start_paused: bool,
     ) -> Result<u64, TimerError>
     where
         F: TimerCallback + 'static,
     {
-        if interval.is_zero() {
+        if config.interval.is_zero() {
             return Err(TimerError::invalid_parameter(
                 "Interval must be greater than zero.",
             ));
         }
 
-        if recurring && matches!(expiration_count, Some(0)) {
+        if config.recurring && matches!(config.expiration_count, Some(0)) {
             return Err(TimerError::invalid_parameter(
                 "Expiration count must be greater than zero.",
             ));
         }
 
-        if initial_delay.is_some_and(|delay| delay.is_zero()) {
+        if config.initial_delay.is_some_and(|delay| delay.is_zero()) {
             return Err(TimerError::invalid_parameter(
                 "Initial delay must be greater than zero.",
             ));
         }
 
-        if callback_timeout.is_some_and(|timeout| timeout.is_zero()) {
+        if config
+            .callback_timeout
+            .is_some_and(|timeout| timeout.is_zero())
+        {
             return Err(TimerError::invalid_parameter(
                 "Callback timeout must be greater than zero.",
             ));
@@ -696,8 +717,8 @@ impl Timer {
                 TimerState::Running
             };
             *self.inner.command_tx.lock().await = Some(tx);
-            *self.inner.interval.lock().await = interval;
-            *self.inner.expiration_count.lock().await = expiration_count;
+            *self.inner.interval.lock().await = config.interval;
+            *self.inner.expiration_count.lock().await = config.expiration_count;
             *self.inner.statistics.lock().await = TimerStatistics::default();
             *self.inner.last_outcome.lock().await = None;
             self.inner.completion_tx.send_replace(None);
@@ -708,9 +729,9 @@ impl Timer {
             &self.inner,
             TimerEvent::Started {
                 run_id,
-                interval,
-                recurring,
-                expiration_count,
+                interval: config.interval,
+                recurring: config.recurring,
+                expiration_count: config.expiration_count,
             },
         );
 
@@ -718,19 +739,7 @@ impl Timer {
         let handle = self.inner.runtime.spawn(async move {
             let scoped_inner = Arc::clone(&inner);
             runtime::with_run_context(&scoped_inner, run_id, async move {
-                runtime::run_timer(
-                    inner,
-                    run_id,
-                    interval,
-                    initial_delay,
-                    callback_timeout,
-                    retry_policy,
-                    recurring,
-                    expiration_count,
-                    callback,
-                    rx,
-                )
-                .await;
+                runtime::run_timer(inner, run_id, config, callback, rx).await;
             })
             .await;
         });
@@ -904,13 +913,15 @@ impl TimerBuilder {
             TimerKind::Once(delay) => {
                 let _ = timer
                     .start_internal(
-                        delay,
-                        None,
-                        self.callback_timeout,
-                        self.retry_policy,
+                        RunConfig {
+                            interval: delay,
+                            initial_delay: None,
+                            callback_timeout: self.callback_timeout,
+                            retry_policy: self.retry_policy,
+                            recurring: false,
+                            expiration_count: None,
+                        },
                         callback,
-                        false,
-                        None,
                         self.start_paused,
                     )
                     .await?;
@@ -921,13 +932,15 @@ impl TimerBuilder {
             } => {
                 let _ = timer
                     .start_internal(
-                        interval,
-                        initial_delay,
-                        self.callback_timeout,
-                        self.retry_policy,
+                        RunConfig {
+                            interval,
+                            initial_delay,
+                            callback_timeout: self.callback_timeout,
+                            retry_policy: self.retry_policy,
+                            recurring: true,
+                            expiration_count: self.expiration_count,
+                        },
                         callback,
-                        true,
-                        self.expiration_count,
                         self.start_paused,
                     )
                     .await?;
