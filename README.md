@@ -13,21 +13,25 @@ It is built around a small set of handle types:
 ## Features
 
 - One-shot and recurring timers
+- Deadline-based one-shot scheduling
 - Optional initial delay for recurring timers
+- Optional recurring jitter
 - Pause, resume, graceful stop, and immediate cancel
 - Dynamic interval adjustment for live runs
 - Per-callback timeout support
-- Retry policy support for failed callbacks
+- Retry policy and retry backoff support for failed callbacks
 - Run outcomes and execution statistics
 - Broadcast lifecycle events plus lossless completion waiting
+- Labels, metadata tags, timer snapshots, and registry listing/filtering helpers
 - Registry helpers for managing many timers, including bulk pause/resume
 - Closure-first API with optional trait-based callbacks
+- Optional `test-util` feature for deterministic mocked time
 
 ## Installation
 
 ```toml
 [dependencies]
-timer-lib = "0.3.0"
+timer-lib = "0.4.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ```
 
@@ -101,6 +105,37 @@ async fn main() {
 }
 ```
 
+## Deadlines, Jitter, And Backoff
+
+```rust
+use std::time::Duration;
+use timer_lib::{RecurringSchedule, Timer, TimerError};
+use tokio::time::Instant;
+
+#[tokio::main]
+async fn main() {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let timer = Timer::at(deadline)
+        .start(|| async { Ok::<(), TimerError>(()) })
+        .await
+        .unwrap();
+
+    let recurring = Timer::recurring(
+        RecurringSchedule::new(Duration::from_secs(5))
+            .with_jitter(Duration::from_secs(1))
+            .with_expiration_count(3),
+    )
+    .max_retries(2)
+    .exponential_backoff(Duration::from_millis(250))
+    .start(|| async { Ok::<(), TimerError>(()) })
+    .await
+    .unwrap();
+
+    let _ = timer.join().await.unwrap();
+    let _ = recurring.join().await.unwrap();
+}
+```
+
 ## Events And Completion
 
 Use `subscribe()` when you want a best-effort event stream and `completion()` when you need to reliably observe the final outcome of a run.
@@ -152,6 +187,26 @@ async fn main() {
 }
 ```
 
+## Labels And Snapshots
+
+```rust
+use std::time::Duration;
+use timer_lib::Timer;
+
+#[tokio::main]
+async fn main() {
+    let timer = Timer::once(Duration::from_secs(1))
+        .label("billing")
+        .tag("tenant", "acme")
+        .start(|| async { Ok::<(), timer_lib::TimerError>(()) })
+        .await
+        .unwrap();
+
+    let snapshot = timer.snapshot().await;
+    assert_eq!(snapshot.metadata.label.as_deref(), Some("billing"));
+}
+```
+
 ## Callback Styles
 
 The simplest API uses closures:
@@ -186,5 +241,7 @@ impl TimerCallback for MyCallback {
 ## Current Scope
 
 `timer-lib` currently targets Tokio runtimes. It does not provide cron scheduling or `async-std` support.
+
+For deterministic test control, enable the `test-util` feature and use `Timer::new_mocked()` or `TimerRegistry::new_mocked()`.
 
 The next major documentation pass should live on docs.rs. For now, the most complete usage sample is [examples/feature_showcase.rs](examples/feature_showcase.rs).

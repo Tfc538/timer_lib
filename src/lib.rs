@@ -10,6 +10,7 @@
 //! - [`TimerRegistry`] tracks timers by ID and supports bulk operations.
 //! - [`TimerEvents`] exposes broadcast lifecycle events.
 //! - [`TimerCompletion`] exposes lossless completed-run delivery.
+//! - [`TimerSnapshot`] and [`RegisteredTimer`] expose introspection-friendly state.
 //!
 //! # Examples
 //!
@@ -77,6 +78,29 @@
 //!
 //! let outcome = completion.wait_for_run(run_id).await.unwrap();
 //! assert_eq!(outcome.run_id, run_id);
+//! # });
+//! ```
+//!
+//! Start a one-shot timer at an absolute deadline:
+//!
+//! ```rust
+//! use std::time::Duration;
+//! use timer_lib::{Timer, TimerError, TimerFinishReason};
+//! use tokio::time::Instant;
+//!
+//! # let runtime = tokio::runtime::Builder::new_current_thread()
+//! #     .enable_all()
+//! #     .build()
+//! #     .unwrap();
+//! # runtime.block_on(async {
+//! let deadline = Instant::now() + Duration::from_millis(10);
+//! let timer = Timer::at(deadline)
+//!     .start(|| async { Ok::<(), TimerError>(()) })
+//!     .await
+//!     .unwrap();
+//!
+//! let outcome = timer.join().await.unwrap();
+//! assert_eq!(outcome.reason, TimerFinishReason::Completed);
 //! # });
 //! ```
 //!

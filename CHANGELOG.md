@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 *None*
 
+## [0.4.0] - 2026-03-10
+
+### Added
+
+- Deadline-based one-shot scheduling via `Timer::at(...)`, `Timer::start_at(...)`, and `TimerRegistry::start_at(...)`.
+- Bounded recurring jitter and retry backoff strategies.
+- Timer metadata, labels, snapshots, and registry snapshot listing/filtering.
+- A feature-gated `test-util` mock runtime for deterministic downstream tests.
+
+### Changed
+
+- Reduced the library Tokio dependency surface away from `full`.
+- Expanded the public exports to cover metadata, snapshots, retry backoff, and registry snapshots.
+
 ## [0.3.0] - 2026-03-10
 
 ### Added
