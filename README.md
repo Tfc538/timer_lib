@@ -13,18 +13,21 @@ It is built around a small set of handle types:
 ## Features
 
 - One-shot and recurring timers
+- Optional initial delay for recurring timers
 - Pause, resume, graceful stop, and immediate cancel
 - Dynamic interval adjustment for live runs
+- Per-callback timeout support
+- Retry policy support for failed callbacks
 - Run outcomes and execution statistics
 - Broadcast lifecycle events plus lossless completion waiting
-- Registry helpers for managing many timers
+- Registry helpers for managing many timers, including bulk pause/resume
 - Closure-first API with optional trait-based callbacks
 
 ## Installation
 
 ```toml
 [dependencies]
-timer-lib = "0.2.0"
+timer-lib = "0.2.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ```
 
@@ -71,6 +74,29 @@ async fn main() {
     let outcome = timer.join().await.unwrap();
     assert_eq!(outcome.reason, TimerFinishReason::Completed);
     assert_eq!(outcome.statistics.execution_count, 3);
+}
+```
+
+## Retry And Timeout Controls
+
+```rust
+use std::time::Duration;
+use timer_lib::{Timer, TimerError};
+
+#[tokio::main]
+async fn main() {
+    let timer = Timer::once(Duration::from_secs(1))
+        .callback_timeout(Duration::from_secs(2))
+        .max_retries(1)
+        .start(|| async {
+            // Do some async work here.
+            Ok::<(), TimerError>(())
+        })
+        .await
+        .unwrap();
+
+    let outcome = timer.join().await.unwrap();
+    println!("attempted: {}", outcome.statistics.execution_count);
 }
 ```
 
