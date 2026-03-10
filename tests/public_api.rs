@@ -205,3 +205,28 @@ async fn registry_ergonomics_cover_common_bulk_operations() {
     assert_eq!(registry.clear().await, 2);
     assert!(registry.is_empty().await);
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn registry_pause_and_resume_helpers_are_available_from_the_public_api() {
+    let registry = TimerRegistry::new();
+    let (timer_id, timer) = registry
+        .start_recurring(Duration::from_secs(2), || async { Ok(()) }, Some(1))
+        .await
+        .unwrap();
+    settle().await;
+
+    assert!(registry.pause(timer_id).await.unwrap());
+    assert_eq!(timer.get_state().await, timer_lib::TimerState::Paused);
+
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    assert_eq!(timer.get_statistics().await.execution_count, 0);
+
+    registry.resume_all().await;
+    advance(Duration::from_secs(2)).await;
+    settle().await;
+    assert_eq!(
+        timer.join().await.unwrap().reason,
+        TimerFinishReason::Completed
+    );
+}

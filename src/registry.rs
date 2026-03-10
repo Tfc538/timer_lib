@@ -94,11 +94,43 @@ impl TimerRegistry {
         }
     }
 
+    /// Pauses a timer by identifier when it exists.
+    pub async fn pause(&self, id: u64) -> Result<bool, TimerError> {
+        let timer = self.get(id).await;
+        match timer {
+            Some(timer) => {
+                timer.pause().await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Resumes a timer by identifier when it exists.
+    pub async fn resume(&self, id: u64) -> Result<bool, TimerError> {
+        let timer = self.get(id).await;
+        match timer {
+            Some(timer) => {
+                timer.resume().await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Stops all timers currently tracked by the registry.
     pub async fn stop_all(&self) {
         let timers: Vec<Timer> = self.timers.read().await.values().cloned().collect();
         for timer in timers {
             let _ = timer.stop().await;
+        }
+    }
+
+    /// Pauses all running timers currently tracked by the registry.
+    pub async fn pause_all(&self) {
+        let timers: Vec<Timer> = self.timers.read().await.values().cloned().collect();
+        for timer in timers {
+            let _ = timer.pause().await;
         }
     }
 
@@ -127,6 +159,14 @@ impl TimerRegistry {
         let timers: Vec<Timer> = self.timers.read().await.values().cloned().collect();
         for timer in timers {
             let _ = timer.cancel().await;
+        }
+    }
+
+    /// Resumes all paused timers currently tracked by the registry.
+    pub async fn resume_all(&self) {
+        let timers: Vec<Timer> = self.timers.read().await.values().cloned().collect();
+        for timer in timers {
+            let _ = timer.resume().await;
         }
     }
 
@@ -228,5 +268,30 @@ mod tests {
         assert_eq!(outcome.reason, TimerFinishReason::Cancelled);
         assert_eq!(registry.clear().await, 1);
         assert!(registry.is_empty().await);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn registry_can_pause_and_resume_tracked_timers() {
+        let registry = TimerRegistry::new();
+        let (timer_id, timer) = registry
+            .start_recurring(Duration::from_secs(2), || async { Ok(()) }, Some(1))
+            .await
+            .unwrap();
+        settle().await;
+
+        assert!(registry.pause(timer_id).await.unwrap());
+        assert_eq!(timer.get_state().await, TimerState::Paused);
+
+        advance(Duration::from_secs(5)).await;
+        settle().await;
+        assert_eq!(timer.get_statistics().await.execution_count, 0);
+
+        assert!(registry.resume(timer_id).await.unwrap());
+        advance(Duration::from_secs(2)).await;
+        settle().await;
+        assert_eq!(
+            timer.join().await.unwrap().reason,
+            TimerFinishReason::Completed
+        );
     }
 }
